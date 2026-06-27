@@ -4,14 +4,17 @@ import {
   defaultBudgetState,
   defaultRequestState
 } from "./demo-data";
-import type { BudgetMode, BudgetState, DemoRequestState } from "./types";
+import type { BackendAnalysis, BackendGeneration, BudgetMode, BudgetState, DemoRequestState } from "./types";
 
 export const storageKeys = {
   request: "travy-demo-request",
   budget: "travy-budget-state",
   budgetMode: "travy-budget-mode",
   routeHighlight: "travy-route-highlight",
-  securityDemo: "travy-security-demo"
+  securityDemo: "travy-security-demo",
+  latestAnalysis: "travy-latest-backend-analysis",
+  latestGeneration: "travy-latest-backend-generation",
+  backendError: "travy-backend-error"
 } as const;
 
 function readJson<T>(key: string, fallback: T): T {
@@ -67,10 +70,44 @@ export function setSecurityDemo(value: boolean) {
   window.localStorage.setItem(storageKeys.securityDemo, String(value));
 }
 
+export function getLatestAnalysis() {
+  return readJson<BackendAnalysis | null>(storageKeys.latestAnalysis, null);
+}
+
+export function setLatestAnalysis(analysis: BackendAnalysis) {
+  writeJson(storageKeys.latestAnalysis, analysis);
+}
+
+export function getLatestGeneration() {
+  return readJson<BackendGeneration | null>(storageKeys.latestGeneration, null);
+}
+
+export function setLatestGeneration(generation: BackendGeneration) {
+  writeJson(storageKeys.latestGeneration, generation);
+}
+
+export function clearLatestBackendRun() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(storageKeys.latestAnalysis);
+  window.localStorage.removeItem(storageKeys.latestGeneration);
+  window.localStorage.removeItem(storageKeys.backendError);
+}
+
+export function setBackendError(message: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(storageKeys.backendError, message);
+}
+
+export function getBackendError() {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(storageKeys.backendError) || "";
+}
+
 export function resetDemoState() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(storageKeys.routeHighlight);
   window.localStorage.removeItem(storageKeys.securityDemo);
+  clearLatestBackendRun();
   setDemoRequest(defaultRequestState);
   setBudgetState({
     totalBudgetUsd: 2,
