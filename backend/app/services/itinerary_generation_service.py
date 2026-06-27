@@ -14,6 +14,7 @@ from app.services.otari_planner_service import OtariPlannerService
 from app.services.itinerary_validator_service import ItineraryValidatorService
 from app.services.cost_estimator_service import CostEstimatorService
 from app.services.result_store_service import ResultStoreService
+from app.integrations.weather_client import WeatherClient
 
 logger = logging.getLogger("travy.itinerary_generation_service")
 
@@ -30,33 +31,30 @@ class ItineraryGenerationService:
         self.result_store = ResultStoreService()
 
     def _parse_time_to_minutes(self, t_str: str) -> int:
-        # Simple parser for e.g. "2 PM" -> 840 mins, "8 PM" -> 1200 mins
-        t_clean = t_str.lower().strip()
-        pm = "pm" in t_clean
-        t_nums = "".join([c for c in t_clean if c.isdigit() or c == ":"])
-        if not t_nums:
-            return 840 # 2 PM default
-        if ":" in t_nums:
-            parts = t_nums.split(":")
-            h, m = int(parts[0]), int(parts[1])
-        else:
-            h, m = int(t_nums), 0
-            
-        if h == 12:
-            h = 0 if not pm else 12
-        elif pm:
-            h += 12
-            
-        return h * 60 + m
+        t_str = t_str.upper().strip()
+        import re
+        match = re.search(r'(\d+)\s*(AM|PM)', t_str)
+        if not match:
+            return 600
+        hour = int(match.group(1))
+        period = match.group(2)
+        if period == "PM" and hour != 12:
+            hour += 12
+        elif period == "AM" and hour == 12:
+            hour = 0
+        return hour * 60
 
-    def _format_minutes_to_time(self, minutes: int) -> str:
-        h = (minutes // 60) % 24
-        m = minutes % 60
-        ampm = "PM" if h >= 12 else "AM"
-        h_disp = h % 12
-        if h_disp == 0:
-            h_disp = 12
-        return f"{h_disp}:{m:02d} {ampm}"
+    def _format_minutes_to_time(self, mins: int) -> str:
+        hour = (mins // 60) % 24
+        minute = mins % 60
+        period = "AM"
+        if hour >= 12:
+            period = "PM"
+            if hour > 12:
+                hour -= 12
+        elif hour == 0:
+            hour = 12
+        return f"{hour}:{minute:02d} {period}"
 
     def _build_deterministic_itinerary(
         self,
@@ -65,7 +63,6 @@ class ItineraryGenerationService:
         start_time_str: str,
         moods: List[str]
     ) -> Dict[str, Any]:
-        # Formulate a baseline title and summary
         title = f"{city} {', '.join(moods[:3])} plan"
         summary = f"A comfort-aware local plan for exploring {city}."
         
@@ -91,13 +88,11 @@ class ItineraryGenerationService:
                 "category": stop["category"],
                 "start_time": stop_start,
                 "end_time": stop_end,
-                "estimated_cost_per_person_inr": stop.get("estimated_cost_inr", 100),
+                "estimated_cost_per_person_inr": stop.get("estimated_cost_inr", stop.get("estimated_cost_per_person_inr", 100)),
                 "why_selected": reasons,
-                "source_provider": stop.get("source_provider", "local_fallback"),
+                "source_provider": stop.get("source_provider", "overpass"),
                 "confidence": stop.get("confidence", 0.8)
             })
-            
-            # Add stop time + 15 mins travel
             current_mins += duration + 15
             
         return {
@@ -112,7 +107,6 @@ class ItineraryGenerationService:
         if not analysis:
             raise ValueError(f"Analysis request with ID '{request_id}' not found.")
             
-        # Re-check hard gates
         security = analysis["security"]
         intent = analysis["intent"]
         parsed = analysis["parsed"]
@@ -120,7 +114,6 @@ class ItineraryGenerationService:
         route_decision = analysis["route_decision"]
         budget = analysis["budget"]
         
-        # Assemble routing trace list from DB
         traces = PersistenceService.get_traces(request_id)
         step_number = len(traces) + 1
         
@@ -136,7 +129,7 @@ class ItineraryGenerationService:
             PersistenceService.save_trace(request_id, step_number, "Itinerary generation blocked", "OUT_OF_SCOPE", "blocked", 0.0, "Request is out of scope.")
             return {"status": "out_of_scope", "message": "Generation blocked because Phase 2 did not approve generation. Reason: out of scope."}
 
-        # 2. Geocode city dynamically
+        # 2. Geocode city dynamically (no fabrication if offline/unknown)
         city = parsed["city"]["value"]
         geocode_start = datetime.now()
         try:
@@ -144,14 +137,29 @@ class ItineraryGenerationService:
             geocode_latency = int((datetime.now() - geocode_start).total_seconds() * 1000)
             geocoder_status = "ok"
         except Exception as e:
-            city_geo = {"city": city, "lat": 28.6139, "lng": 77.2090, "bbox": [28.4, 28.9, 76.8, 77.4], "provider": "local_fallback", "confidence": 0.5}
-            geocode_latency = int((datetime.now() - geocode_start).total_seconds() * 1000)
-            geocoder_status = "degraded"
+            # Geocoder failure triggers NO_VALID_RESULTS immediately
+            PersistenceService.save_trace(request_id, step_number, "Geocode city", "GEOCODING_API", "error", 0.0, f"Geocoding failed: {str(e)}")
+            return {
+                "status": "NO_VALID_RESULTS",
+                "reason": f"Unable to geocode city '{city}'. Geocoding service is unavailable."
+            }
             
         PersistenceService.save_trace(request_id, step_number, "Geocode city", "GEOCODING_API", "ok", 0.0, f"Resolved '{city}' via {city_geo['provider']}.")
         step_number += 1
 
-        # 3. Fetch candidate places
+        # 3. Weather lookup (Open-Meteo current forecast query)
+        weather_client = WeatherClient()
+        weather_data = await weather_client.get_weather(city_geo["lat"], city_geo["lng"], request_id)
+        weather_status = weather_data.get("status", "success")
+        
+        PersistenceService.save_trace(
+            request_id, step_number, "Weather lookup", "WEATHER_API",
+            weather_status, 0.0,
+            f"Current temperature: {weather_data.get('temperature')}°C. Status: {weather_status}."
+        )
+        step_number += 1
+
+        # 4. Fetch candidate places
         moods = parsed["moods"]["value"] or []
         places_start = datetime.now()
         try:
@@ -160,35 +168,38 @@ class ItineraryGenerationService:
             places_latency = int((datetime.now() - places_start).total_seconds() * 1000)
             places_status = "ok"
         except Exception as e:
-            candidates_res = {"candidates": [], "raw_candidates_count": 0, "deduped_candidates_count": 0, "duplicates_removed": 0}
-            candidates = []
-            places_latency = int((datetime.now() - places_start).total_seconds() * 1000)
-            places_status = "error"
+            PersistenceService.save_trace(request_id, step_number, "Fetch place candidates", "PLACES_API", "error", 0.0, f"Places search failed: {str(e)}")
+            return {
+                "status": "NO_VALID_RESULTS",
+                "reason": f"Places lookup failed: {str(e)}"
+            }
             
         PersistenceService.save_trace(request_id, step_number, "Fetch place candidates", "PLACES_API", "ok", 0.0, f"Fetched {candidates_res['raw_candidates_count']} places, deduped to {candidates_res['deduped_candidates_count']}.")
         step_number += 1
         
         if not candidates:
-            # Clean fallback if 0 candidates are returned
+            # Fail gracefully on empty candidates
             return {
-                "status": "error",
-                "message": f"Places provider returned zero candidates for {city}. Try another city.",
-                "api_evidence": {
-                    "geocoder": {"provider": city_geo["provider"], "status": geocoder_status, "latency_ms": geocode_latency},
-                    "places": {"provider": getattr(settings, "PLACES_PROVIDER", "overpass"), "status": "empty_candidates", "raw_candidates": 0, "deduped_candidates": 0}
-                }
+                "status": "NO_VALID_RESULTS",
+                "reason": "Unable to find places matching the constraints."
             }
 
-        # 4. Rank candidates
+        # 5. Rank candidates (using 11 fit dimensions and config weights)
         budget_val = parsed["budget_per_person_inr"]["value"] or 1000
         energy_val = parsed["energy"]["value"] or "medium"
-        ranked = self.candidate_ranker.rank_candidates(candidates, city_geo, moods, budget_val, energy_val)
+        ranked = self.candidate_ranker.rank_candidates(
+            candidates=candidates,
+            city_geo=city_geo,
+            parsed_constraints=parsed,
+            weather_data=weather_data
+        )
+        
         PersistenceService.save_trace(request_id, step_number, "Rank candidates", "LOCAL_LOGIC", "ok", 0.0, "Applied multi-feature ranking formula to candidates.")
         step_number += 1
 
-        # 5. Determine stops count based on time window
-        start_time_str = parsed["start_time"]["value"] or "2 PM"
-        end_time_str = parsed["end_time"]["value"] or "8 PM"
+        # 6. Determine stops count based on time window
+        start_time_str = parsed["start_time"]["value"] or "10 AM"
+        end_time_str = parsed["end_time"]["value"] or "6 PM"
         
         start_mins = self._parse_time_to_minutes(start_time_str)
         end_mins = self._parse_time_to_minutes(end_time_str)
@@ -203,11 +214,10 @@ class ItineraryGenerationService:
         else:
             stop_count = 5
             
-        # Select top scored stops
         selected_candidates = ranked[:stop_count]
 
-        # 6. Optimize route ordering
-        route_res = await self.route_optimizer.optimize_route(selected_candidates, city_geo["lat"], city_geo["lng"], request_id)
+        # 7. Optimize route ordering (TSP search passing start_time)
+        route_res = await self.route_optimizer.optimize_route(selected_candidates, city_geo["lat"], city_geo["lng"], start_time_str, request_id)
         ordered_stops = route_res["ordered_stops"]
         route_ordering = route_res["route_ordering"]
         travel_time_mins = route_res["total_travel_time_minutes"]
@@ -215,18 +225,16 @@ class ItineraryGenerationService:
         PersistenceService.save_trace(request_id, step_number, "Optimize stop order", "DISTANCE_API", "ok", 0.0, f"Ordered stops via {route_ordering['provider']}.")
         step_number += 1
 
-        # 7. Apply Guardian Route comfort logic
+        # 8. Apply Guardian Route comfort logic
         guardian_res = self.guardian_route_service.build_guardian_route(ordered_stops, travel_time_mins, energy_val)
 
-        # 8. Generation Flow — check budget and model eligibility
+        # 9. Generation Flow
         otari_status = "skipped"
         fallback_used = False
         otari_evidence = {}
         itinerary_result = {}
         validation_res = {"passed": True, "checks": ["local_builder"], "warnings": []}
         
-        # Decide if we make an LLM model call or use deterministic fallback
-        # Skipped if budget mode is critical, or route_decision route is API_ONLY_FALLBACK
         is_critical_budget = budget.get("mode") == "critical"
         route_is_fallback = route_decision.get("route") == "API_ONLY_FALLBACK"
         
@@ -254,7 +262,6 @@ class ItineraryGenerationService:
                 itinerary_result = await self.otari_planner.generate_itinerary(model_tier, constraints, ordered_stops, request_id, session_id)
                 otari_evidence = itinerary_result.get("_otari_evidence", {})
                 
-                # Validate output
                 validation_res = self.validator.validate_itinerary(itinerary_result, ordered_stops, budget_val)
                 
                 if not validation_res["passed"]:
@@ -263,12 +270,10 @@ class ItineraryGenerationService:
                     repaired_itinerary = await self.otari_planner.attempt_repair(
                         repair_err, json.dumps(itinerary_result), constraints, ordered_stops, request_id, session_id
                     )
-                    # Re-validate repaired output
                     repair_validation = self.validator.validate_itinerary(repaired_itinerary, ordered_stops, budget_val)
                     if repair_validation["passed"]:
                         itinerary_result = repaired_itinerary
                         validation_res = repair_validation
-                        # Add original repair token cost to overall cost
                         otari_evidence["cost_usd"] += repaired_itinerary.get("_otari_evidence", {}).get("cost_usd", 0.0)
                         otari_evidence["input_tokens"] += repaired_itinerary.get("_otari_evidence", {}).get("input_tokens", 0)
                         otari_evidence["output_tokens"] += repaired_itinerary.get("_otari_evidence", {}).get("output_tokens", 0)
@@ -290,15 +295,17 @@ class ItineraryGenerationService:
                 PersistenceService.save_trace(request_id, step_number, "Generate itinerary", "LOCAL_DETERMINISTIC_BUILDER", "ok", 0.0, f"Otari failed: {str(e)}. Using fallback.")
                 step_number += 1
 
-        # 9. Compute Final cost breakdown
-        cost_breakdown = self.cost_estimator.estimate_itinerary_cost(itinerary_result["stops"], route_ordering, budget_val, moods)
+        # 10. Compute Final cost breakdown passing group_size
+        cost_breakdown = self.cost_estimator.estimate_itinerary_cost(
+            itinerary_result["stops"], route_ordering, budget_val, moods, parsed["group_size"]["value"]
+        )
         
         # Update itinerary details
         itinerary_result["total_estimated_cost_per_person_inr"] = cost_breakdown["estimated_total"]
         itinerary_result["budget_status"] = cost_breakdown["budget_status"]
         itinerary_result["total_travel_time_minutes"] = travel_time_mins
         
-        # Structure final API evidence drawer object
+        # Structure API evidence
         api_evidence = {
             "geocoder": {
                 "provider": city_geo["provider"],
@@ -325,7 +332,6 @@ class ItineraryGenerationService:
             }
         }
         
-        # Create validation report
         validation_report = {
             "passed": validation_res["passed"],
             "checks": validation_res["checks"],
@@ -333,11 +339,10 @@ class ItineraryGenerationService:
             "fallback_used": fallback_used
         }
         
-        # Save validation check trace step
         status_label = "passed" if validation_res["passed"] else "warnings"
         PersistenceService.save_trace(request_id, step_number, "Validate output", "LOCAL_LOGIC", status_label, 0.0, f"Validator passed: {validation_res['passed']}.")
         
-        # 10. Persist results
+        # 11. Persist results
         result_id = f"res_{uuid.uuid4().hex[:8]}"
         final_response = {
             "request_id": request_id,

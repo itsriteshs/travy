@@ -1,78 +1,76 @@
 class ComplexityService:
-    def calculate(self, parsed: dict, overall_parser_confidence: float) -> dict:
+    def calculate(self, parsed: dict, overall_parser_confidence: float = 1.0) -> dict:
         score = 0
         breakdown = []
         
-        # Group size
-        group_size = parsed.get("group_size", {}).get("value")
-        if group_size and group_size > 1:
+        def get_val(field):
+            if not parsed:
+                return None
+            val_obj = parsed.get(field)
+            if isinstance(val_obj, dict) and "value" in val_obj:
+                return val_obj["value"]
+            return val_obj
+
+        # 1. Mood count complexity (+10 per mood)
+        moods = get_val("moods") or []
+        if moods:
+            pts = len(moods) * 10
+            score += pts
+            breakdown.append({
+                "feature": "moods",
+                "points": pts,
+                "reason": f"{len(moods)} moods requested."
+            })
+            
+        # 2. Group size complexity (+5 per extra person)
+        group_size = get_val("group_size") or 1
+        if group_size > 1:
+            pts = (group_size - 1) * 5
+            score += pts
+            breakdown.append({
+                "feature": "group_size",
+                "points": pts,
+                "reason": f"Group size is {group_size}."
+            })
+            
+        # 3. Fatigue constraint (+20 if low energy)
+        energy = get_val("energy")
+        if energy == "low" or (isinstance(energy, str) and "low" in energy):
             score += 20
             breakdown.append({
-                "feature": "group_planning",
+                "feature": "energy",
                 "points": 20,
-                "reason": f"Group size is {group_size} (> 1)."
+                "reason": "Fatigue-aware low energy preference specified."
             })
             
-        # Budget constraint
-        budget = parsed.get("budget_per_person_inr", {}).get("value")
-        if budget:
+        # 4. Gaps/Ambiguity complexity (+15 if gaps > 2)
+        gaps = get_val("gaps")
+        if not gaps:
+            # calculate missing required fields from parsed dictionary keys
+            gaps = []
+            for field in ["city", "group_size", "budget_per_person_inr", "start_time", "end_time", "moods"]:
+                if not get_val(field):
+                    gaps.append(field)
+        if len(gaps) > 2:
             score += 15
             breakdown.append({
-                "feature": "budget_constraint",
+                "feature": "ambiguity",
                 "points": 15,
-                "reason": f"Budget per person is specified: ₹{budget}."
+                "reason": f"{len(gaps)} missing constraints (gaps)."
             })
             
-        # Time window
-        start = parsed.get("start_time", {}).get("value")
-        end = parsed.get("end_time", {}).get("value")
-        if start and end:
-            score += 15
+        # 5. Crowd tolerance complexity (+10 if low crowd tolerance)
+        crowd_tolerance = get_val("crowd_tolerance")
+        if crowd_tolerance == "low":
+            score += 10
             breakdown.append({
-                "feature": "time_window",
-                "points": 15,
-                "reason": f"Time window is specified: {start} to {end}."
+                "feature": "crowd_tolerance",
+                "points": 10,
+                "reason": "Low crowd tolerance requested."
             })
             
-        # Multiple moods
-        moods = parsed.get("moods", {}).get("value") or []
-        if len(moods) > 2:
-            score += 15
-            breakdown.append({
-                "feature": "multiple_moods",
-                "points": 15,
-                "reason": f"More than two moods are requested: {moods}."
-            })
-            
-        # Route ordering
-        if len(moods) > 1 and start and end:
-            score += 15
-            breakdown.append({
-                "feature": "route_ordering",
-                "points": 15,
-                "reason": "Multiple stops need ordering within the time window."
-            })
-            
-        # Fatigue constraint
-        energy = parsed.get("energy", {}).get("value")
-        if energy in ["medium-low", "high"]:
-            score += 8
-            breakdown.append({
-                "feature": "fatigue_constraint",
-                "points": 8,
-                "reason": f"Fatigue preference is specified: {energy}."
-            })
-            
-        # Parser uncertainty
-        if overall_parser_confidence < 0.95:
-            score += 3
-            breakdown.append({
-                "feature": "parser_uncertainty",
-                "points": 3,
-                "reason": "Some soft preferences are inferred."
-            })
-            
-        # Level determination
+        score = min(score, 100)
+        
         if score >= 80:
             level = "high"
         elif score >= 50:

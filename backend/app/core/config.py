@@ -23,6 +23,35 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./travy.db")
     FRONTEND_ORIGIN: str = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
     NEXT_PUBLIC_BACKEND_URL: str = os.getenv("NEXT_PUBLIC_BACKEND_URL", "http://localhost:8080")
+    
+    GOOGLE_PLACES_API_KEY: str = os.getenv("GOOGLE_PLACES_API_KEY", "")
+    FOURSQUARE_API_KEY: str = os.getenv("FOURSQUARE_API_KEY", "")
+    MAPBOX_ACCESS_TOKEN: str = os.getenv("MAPBOX_ACCESS_TOKEN", "")
+    WEATHER_API_KEY: str = os.getenv("WEATHER_API_KEY", "")
+
+    @property
+    def weights(self) -> dict:
+        weights_path = BASE_DIR / "config" / "weights.json"
+        if not weights_path.exists():
+            return {
+                "budget_fit": 0.15,
+                "distance_fit": 0.10,
+                "time_fit": 0.10,
+                "weather_fit": 0.10,
+                "group_fit": 0.10,
+                "mood_fit": 0.15,
+                "opening_hours_fit": 0.10,
+                "safety_fit": 0.10,
+                "crowd_fit": 0.05,
+                "fatigue_penalty": 0.05,
+                "transport_fit": 0.05
+            }
+        try:
+            with open(weights_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
 
     def validate_models(self):
         pricing_path = BASE_DIR / "config" / "model-pricing.json"

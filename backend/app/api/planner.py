@@ -96,6 +96,7 @@ async def analyze_request(request: AnalyzeRequest):
             ext_data = extract_result["extracted"]
             for key, field_name in [
                 ("city", "city"),
+                ("current_location", "current_location"),
                 ("group_size", "group_size"),
                 ("budget_per_person_inr", "budget_per_person_inr"),
                 ("start_time", "start_time"),
@@ -103,52 +104,47 @@ async def analyze_request(request: AnalyzeRequest):
                 ("moods", "moods"),
                 ("energy", "energy"),
                 ("transport", "transport"),
+                ("dietary_restrictions", "dietary_restrictions"),
+                ("weather_conditions", "weather_conditions"),
+                ("accessibility_requirements", "accessibility_requirements"),
+                ("safety_preferences", "safety_preferences"),
                 ("crowd_tolerance", "crowd_tolerance")
             ]:
                 val = ext_data.get(key)
-                if val is not None and (not parsed[field_name]["value"] or parsed[field_name]["confidence"] < 0.8):
-                    parsed[field_name]["value"] = val
-                    parsed[field_name]["confidence"] = 0.90
-                    parsed[field_name]["source"] = "otari_cheap_extractor"
+                if val is not None and (field_name not in parsed or not parsed[field_name]["value"] or parsed[field_name]["confidence"] < 0.8):
+                    parsed[field_name] = {
+                        "value": val,
+                        "confidence": 0.90,
+                        "source": "otari_cheap_extractor"
+                    }
                     
             # Reevaluate missing fields after Otari extractor run
             missing_fields = []
-            if not parsed["city"]["value"]:
+            if not parsed.get("city", {}).get("value"):
                 missing_fields.append("city")
-            if not parsed["group_size"]["value"]:
+            if not parsed.get("group_size", {}).get("value"):
                 missing_fields.append("group_size")
-            if not parsed["budget_per_person_inr"]["value"]:
+            if not parsed.get("budget_per_person_inr", {}).get("value"):
                 missing_fields.append("budget_per_person")
-            if not parsed["start_time"]["value"] or not parsed["end_time"]["value"]:
+            if not parsed.get("start_time", {}).get("value") or not parsed.get("end_time", {}).get("value"):
                 missing_fields.append("time_window")
-            if not parsed["moods"]["value"]:
+            if not parsed.get("moods", {}).get("value"):
                 missing_fields.append("moods")
         else:
             if extract_result.get("used_otari"):
                 used_otari_extractor = True
                 otari_success = False
-
     # 4.5 Default fallbacks if city is present to prevent blocking
-    if parsed["city"]["value"]:
-        if not parsed["group_size"]["value"]:
-            parsed["group_size"]["value"] = 1
-            parsed["group_size"]["confidence"] = 0.80
-            parsed["group_size"]["source"] = "default_fallback"
-        if not parsed["budget_per_person_inr"]["value"]:
-            parsed["budget_per_person_inr"]["value"] = 1000
-            parsed["budget_per_person_inr"]["confidence"] = 0.80
-            parsed["budget_per_person_inr"]["source"] = "default_fallback"
-        if not parsed["start_time"]["value"] or not parsed["end_time"]["value"]:
-            parsed["start_time"]["value"] = "10 AM"
-            parsed["end_time"]["value"] = "6 PM"
-            parsed["start_time"]["confidence"] = 0.80
-            parsed["end_time"]["confidence"] = 0.80
-            parsed["start_time"]["source"] = "default_fallback"
-            parsed["end_time"]["source"] = "default_fallback"
-        if not parsed["moods"]["value"]:
-            parsed["moods"]["value"] = ["sightseeing", "food"]
-            parsed["moods"]["confidence"] = 0.80
-            parsed["moods"]["source"] = "default_fallback"
+    if parsed.get("city", {}).get("value"):
+        if not parsed.get("group_size", {}).get("value"):
+            parsed["group_size"] = {"value": 1, "confidence": 0.80, "source": "default_fallback"}
+        if not parsed.get("budget_per_person_inr", {}).get("value"):
+            parsed["budget_per_person_inr"] = {"value": 1000, "confidence": 0.80, "source": "default_fallback"}
+        if not parsed.get("start_time", {}).get("value") or not parsed.get("end_time", {}).get("value"):
+            parsed["start_time"] = {"value": "10 AM", "confidence": 0.80, "source": "default_fallback"}
+            parsed["end_time"] = {"value": "6 PM", "confidence": 0.80, "source": "default_fallback"}
+        if not parsed.get("moods", {}).get("value"):
+            parsed["moods"] = {"value": ["sightseeing", "food"], "confidence": 0.80, "source": "default_fallback"}
         missing_fields = []
 
     # 5. Overall confidence calculation

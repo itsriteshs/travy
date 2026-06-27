@@ -7,6 +7,55 @@ from app.main import app
 from app.services.persistence_service import PersistenceService
 from app.services.otari_planner_service import OtariPlannerService
 from app.integrations.places_client import PlacesClient
+from app.integrations.geocoder_client import GeocoderClient
+
+# Module level mocks to isolate tests from live OpenStreetMap and Overpass API network calls
+MOCK_PLACES = [
+    {
+        "id": "dl_janpath",
+        "name": "Janpath Market",
+        "category": "market",
+        "lat": 28.6139,
+        "lng": 77.2090,
+        "address": "Janpath, Delhi",
+        "source_provider": "overpass",
+        "rating": 4.2,
+        "price_level": 2,
+        "open_now": True,
+        "estimated_cost_inr": 300,
+        "confidence": 0.90
+    },
+    {
+        "id": "dl_museum",
+        "name": "National Museum",
+        "category": "sightseeing",
+        "lat": 28.6119,
+        "lng": 77.2190,
+        "address": "Janpath, Delhi",
+        "source_provider": "overpass",
+        "rating": 4.5,
+        "price_level": 1,
+        "open_now": True,
+        "estimated_cost_inr": 100,
+        "confidence": 0.95
+    }
+]
+
+async def mock_search_places(self, city_geo: dict, categories: list, limit: int = 15, request_id = None):
+    return MOCK_PLACES
+
+async def mock_geocode_city(self, city: str, request_id = None):
+    return {
+        "city": city,
+        "lat": 28.6139,
+        "lng": 77.2090,
+        "bbox": [28.4, 28.9, 76.8, 77.4],
+        "provider": "nominatim",
+        "confidence": 0.95
+    }
+
+PlacesClient.search_places = mock_search_places
+GeocoderClient.geocode_city = mock_geocode_city
 
 client = TestClient(app)
 
