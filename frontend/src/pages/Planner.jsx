@@ -27,8 +27,6 @@ const QUICK_PROMPTS = [
   },
 ]
 
-const BUDGET_MODES = ['Healthy', 'Low', 'Critical']
-
 function budgetModeStatus(percent) {
   if (percent > 60) return { label: 'BUDGET HEALTHY', bg: '#bbf7d0' }
   if (percent > 20) return { label: 'BUDGET LOW', bg: '#fef08a' }
@@ -46,7 +44,6 @@ export function Planner() {
   const [prompt, setPrompt] = useState(initialPrompt)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [budgetMode, setBudgetMode] = useState('Healthy')
   const [budgetData, setBudgetData] = useState({
     totalBudget: 2,
     currentSpend: 0,
@@ -125,28 +122,6 @@ export function Planner() {
                   Calls the FastAPI backend. If the backend is offline, the error is shown instead
                   of pretending.
                 </p>
-
-                {/* Budget mode selector */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className="border-[2px] border-black px-3 py-1 text-[11px] font-black uppercase tracking-widest"
-                    style={{ backgroundColor: statusBg }}
-                  >
-                    BUDGET MODE: {budgetMode.toUpperCase()}
-                  </span>
-                  {BUDGET_MODES.map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => setBudgetMode(mode)}
-                      className={`brutal-press border-[2px] border-black px-3 py-1 text-[11px] font-black uppercase tracking-widest cursor-pointer ${
-                        budgetMode === mode ? 'bg-[var(--yellow)]' : 'bg-white hover:bg-[var(--muted)]'
-                      }`}
-                    >
-                      {mode}
-                    </button>
-                  ))}
-                </div>
 
                 {/* Quick prompts */}
                 <div className="flex flex-wrap gap-2">
