@@ -84,25 +84,37 @@ async def generate_itinerary(prompt: str, model: str, mcpd_context: dict[str, An
 
     system_prompt = (
         "You are Travy, a travel itinerary generator. "
-        "Return only a practical itinerary with timeline, places, travel order, estimated spend, and summary. "
-        "Keep it actionable and concise. Use markdown bullet/sections only. "
-        "Do not mention internal policies or model routing. "
+        "Return ONLY a structured itinerary in EXACTLY this format (no extra text before or after):\n\n"
+        "TITLE: <2-5 word catchy plan name>\n"
+        "DESC: <one sentence description of the plan>\n\n"
+        "STOP 1\n"
+        "NAME: <place name>\n"
+        "TIME: <HH:MM AM - HH:MM AM>\n"
+        "COST: <amount/person e.g. ₹300/person or $5/person>\n"
+        "INFO: <one sentence describing the stop and what to do there>\n\n"
+        "STOP 2\n"
+        "NAME: <place name>\n"
+        "TIME: <HH:MM AM - HH:MM AM>\n"
+        "COST: <amount/person>\n"
+        "INFO: <one sentence>\n\n"
+        "(Continue for 3-6 stops total)\n\n"
+        "SUMMARY: <2 sentence summary of the full plan>\n\n"
+        "Rules: Use 3 to 6 stops. Keep times realistic and sequential. "
+        "Costs in local currency of the city. One INFO sentence per stop only. "
+        "Do not add any text outside the format above. "
         f"{_city_guidance(city)}"
     )
 
     user_prompt = (
-        "Generate a travel plan from this user request.\n\n"
+        "Generate a structured travel plan from this user request.\n\n"
         f"User request:\n{prompt}\n\n"
         "Tool context:\n"
         f"Weather: {mcpd_context.get('weather', '')}\n"
         f"Places: {', '.join(mcpd_context.get('places', []))}\n"
         f"Map: {mcpd_context.get('map', '')}\n"
         f"Budget helper: {mcpd_context.get('budget', '')}\n\n"
-        "Formatting requirements:\n"
-        "1) Timeline with times\n"
-        "2) Ordered travel route\n"
-        "3) Approximate spend split\n"
-        "4) Compact summary"
+        "Return ONLY the structured TITLE / STOP blocks / SUMMARY format. "
+        "No extra text, no markdown headers, no bullet points outside INFO lines."
     )
 
     body = {
