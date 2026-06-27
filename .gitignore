@@ -1,19 +1,11 @@
-node_modules/
-.venv/
-venv/
+# Python
 backend/.venv/
-backend/venv/
 __pycache__/
-*.py[cod]
-.next/
-out/
-dist/
-build/
-coverage/
-*.tsbuildinfo
-.env
-.env*
-!.env.example
-.DS_Store
-playwright-report/
-test-results/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Env
+backend/.env

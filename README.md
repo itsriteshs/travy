@@ -1,58 +1,101 @@
-# Travy
+# Travy - Mozilla.ai Cost-Aware AI Travel Assistant
 
-Cost-aware social travel assistant for the Mozilla/Otari hack.
+Fresh MVP implementation from scratch in this repository.
 
-## Run Locally
+## Stack
 
-Terminal 1, backend:
+- Backend: FastAPI
+- Frontend: React + Tailwind + shadcn/ui-style components
+- Decisioning: Local Encoderfile-style + Llamafile-style analyzers + Any-Agent inspired agents
+- Generation: Otari client stub
 
-```bash
-cd /Users/ritesh/travy
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-PYTHONPATH=backend uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8080 --reload
-```
+## Mandatory Flow Implemented
 
-Terminal 2, frontend:
+User Prompt
+-> Encoderfile Embedding Generation
+-> Encoderfile Intent Classification
+-> Llamafile Security Analysis
+-> Llamafile Complexity Analysis
+-> Llamafile Cost Estimation
+-> Budget Validation
+-> Dynamic Model Selection
+-> Otari Request
+-> Travel Itinerary Response
 
-```bash
-cd /Users/ritesh/travy
-npm install
-NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8080 npm run dev
-```
+Otari is called only after local analysis and budget/security checks.
 
-Open `http://localhost:3000`. If port `3000` is busy, Next will print the fallback URL.
+## Project Structure
 
-## Demo Flow
+backend/
+- agents/
+- router/
+- security/
+- budget/
+- tools/
+- otari/
+- api/
 
-1. Open `/planner`.
-2. Analyze the default Delhi prompt.
-3. Generate the plan and open `/results`.
-4. Open `/ai-router` to show backend routing trace, budget, usage, and integration health.
-5. Open `/security` to show backend prompt-injection scanning.
-6. Open `/demo` to run backend scenarios:
-   - valid Delhi plan
-   - low budget
-   - critical budget
-   - prompt injection
-   - vague prompt
-   - booking out of scope
-   - unsupported live crime data fallback
+frontend/
+- React app with chat box, itinerary card, transparency panel, and budget bar
 
-## Checks
+## Installed Dependencies (local to this project)
+
+- Backend venv at backend/.venv (Python 3.12)
+- Backend packages from backend/requirements.txt
+- Frontend npm packages in frontend/node_modules
+
+## Run
 
 Backend:
 
-```bash
-source .venv/bin/activate
-PYTHONPATH=backend pytest -q backend/app/tests
-```
+1. cd backend
+2. .venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
 
 Frontend:
 
-```bash
-npm run lint
-npm run typecheck
-npm run build
-```
+1. cd frontend
+2. npm run dev
+
+Open http://localhost:5173
+
+## Run Otari (local gateway)
+
+Otari repo has been checked out at `otari/`.
+
+1. Start Docker Desktop and wait until Docker engine is running.
+2. From project root: `./run-otari.ps1`
+3. Health check: `http://127.0.0.1:8010/health`
+
+Notes:
+
+- Otari host port is mapped to `8010` to avoid conflict with Travy backend on `8000`.
+- Otari Postgres host port is mapped to `5434`.
+
+### One-command setup and run (Windows PowerShell)
+
+From the project root:
+
+1. .\install-all.ps1
+2. In terminal 1: .\run-backend.ps1
+3. In terminal 2: .\run-frontend.ps1
+
+## Notes
+
+- Global budget starts at $2 and is enforced before generation.
+- BLOCKED security requests never reach Otari.
+- Transparency fields are returned for every request.
+- Local routing aliases map to provider models via environment variables:
+	- otari-small -> OTARI_SMALL_MODEL
+	- otari-medium -> OTARI_MEDIUM_MODEL
+	- otari-large -> OTARI_LARGE_MODEL
+	- otari-vision -> OTARI_VISION_MODEL
+- City-aware itinerary prompts are optimized for New Delhi, Coimbatore, and New York City.
+
+## Provider setup check
+
+After backend starts:
+
+- GET http://127.0.0.1:8000/provider-check
+
+If chat returns an Otari network error, verify OTARI_BASE_URL in backend/.env.
+The URL must point to a reachable OpenAI-compatible endpoint that supports /v1/chat/completions.

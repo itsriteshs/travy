@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap');
+@import 'tailwindcss';
+
+:root {
+  --background: #fffaf2;
+  --foreground: #1f1d1a;
+  --card: #fffdf8;
+  --card-foreground: #1f1d1a;
+  --border: #e7d9c5;
+  --primary: #0f766e;
+  --primary-foreground: #ffffff;
+  --muted: #f5ede1;
+  --muted-foreground: #685f54;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'Manrope', ui-sans-serif, sans-serif;
+  background:
+    radial-gradient(circle at 8% 12%, #ffe9c7 0%, transparent 35%),
+    radial-gradient(circle at 93% 80%, #d8f6ee 0%, transparent 30%),
+    var(--background);
+  color: var(--foreground);
+}
+
+#root {
+  min-height: 100vh;
+}
