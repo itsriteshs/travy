@@ -1,0 +1,24 @@
+{
+  "budget": {
+    "defaultTotalUsd": 2.0,
+    "modeThresholds": {
+      "healthy": 0.60,
+      "cautious": 0.35,
+      "low": 0.15,
+      "critical": 0.05
+    }
+  },
+  "security": {
+    "riskThreshold": 70,
+    "weights": {
+      "roleEscalation": 30,
+      "instructionOverride": 25,
+      "promptExtraction": 25,
+      "jailbreakPattern": 20
+    }
+  },
+  "retry": {
+    "otariMaxAttempts": 2,
+    "otariTimeoutMs": 30000
+  }
+}
