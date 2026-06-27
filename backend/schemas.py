@@ -23,6 +23,7 @@ class LlamafileOutput(BaseModel):
 
 
 class BudgetStatus(BaseModel):
+    total_budget: float
     current_request_cost: float
     total_spend: float
     remaining_budget: float
@@ -40,6 +41,7 @@ class TransparencyPanel(BaseModel):
     risk_score: int
     intent: str
     category: str
+    cache_hit: bool
 
 
 class ChatResponse(BaseModel):

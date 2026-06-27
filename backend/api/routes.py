@@ -30,6 +30,8 @@ async def health() -> dict:
 @router.get("/budget")
 async def budget() -> dict:
     return {
+        "total_budget": settings.initial_budget_usd,
+        "current_spend": budget_manager.total_spend(),
         "total_spend": budget_manager.total_spend(),
         "remaining_budget": budget_manager.remaining(),
     }
@@ -71,8 +73,10 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             risk_score=llama_out.risk_score,
             intent=encoder_out.intent,
             category=encoder_out.category,
+            cache_hit=encoder_out.cache_hit,
         )
         budget_status = BudgetStatus(
+            total_budget=settings.initial_budget_usd,
             current_request_cost=0,
             total_spend=budget_manager.total_spend(),
             remaining_budget=budget_manager.remaining(),
@@ -117,9 +121,11 @@ async def chat(payload: ChatRequest) -> ChatResponse:
         risk_score=llama_out.risk_score,
         intent=encoder_out.intent,
         category=encoder_out.category,
+        cache_hit=encoder_out.cache_hit,
     )
 
     budget_status = BudgetStatus(
+        total_budget=settings.initial_budget_usd,
         current_request_cost=final_cost,
         total_spend=budget_manager.total_spend(),
         remaining_budget=budget_manager.remaining(),

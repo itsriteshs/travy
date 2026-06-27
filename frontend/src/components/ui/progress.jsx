@@ -5,7 +5,7 @@ import { cn } from '../../lib/utils'
 export function Progress({ className, value = 0, ...props }) {
   return (
     <ProgressPrimitive.Root
-      className={cn('relative h-2 w-full overflow-hidden rounded-full bg-white', className)}
+      className={cn('relative h-4 w-full overflow-hidden border-[3px] border-black bg-white', className)}
       value={value}
       {...props}
     >

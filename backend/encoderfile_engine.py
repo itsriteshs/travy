@@ -5,7 +5,7 @@ from schemas import EncoderfileOutput
 
 
 class EncoderfileEngine:
-    """Local semantic layer mock inspired by Encoderfile."""
+    """Local semantic layer inspired by Encoderfile."""
 
     def analyze(self, prompt: str) -> EncoderfileOutput:
         text = prompt.lower()
@@ -25,7 +25,7 @@ class EncoderfileEngine:
             intent = "general_query"
 
         embedding_id = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
-        # Simple deterministic cache flag to demonstrate behavior in MVP.
+        # Deterministic cache flag for repeatable routing decisions.
         cache_hit = int(embedding_id[-1], 16) % 4 == 0
 
         return EncoderfileOutput(

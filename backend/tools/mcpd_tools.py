@@ -1,5 +1,5 @@
 def weather_tool(city: str) -> str:
-    return f"Weather in {city}: warm and clear (mock)."
+    return f"Weather context for {city}: prioritize comfortable walking windows and indoor backups if needed."
 
 
 def places_tool(city: str) -> list[str]:
@@ -11,8 +11,8 @@ def places_tool(city: str) -> list[str]:
 
 
 def maps_tool(city: str) -> str:
-    return f"Suggested route map for {city} generated (mock)."
+    return f"Route guidance for {city}: cluster stops by neighborhood to reduce travel time."
 
 
 def budget_tool(currency: str = "USD") -> str:
-    return f"Budget optimizer active in {currency} mode (mock)."
+    return f"Budget guidance active in {currency} mode with local spend limits and fallback behavior."

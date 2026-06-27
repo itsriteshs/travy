@@ -1,16 +1,24 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700;800&display=swap');
 @import 'tailwindcss';
 
 :root {
-  --background: #fffaf2;
-  --foreground: #1f1d1a;
-  --card: #fffdf8;
-  --card-foreground: #1f1d1a;
-  --border: #e7d9c5;
-  --primary: #0f766e;
-  --primary-foreground: #ffffff;
-  --muted: #f5ede1;
-  --muted-foreground: #685f54;
+  --background: #FFFDF5;
+  --foreground: #0A0A0A;
+  --card: #FFFFFF;
+  --card-foreground: #0A0A0A;
+  --border: #000000;
+  --border-width: 3px;
+  --shadow: 4px 4px 0 #000000;
+  --shadow-lg: 6px 6px 0 #000000;
+  --primary: #0EA5E9;
+  --primary-foreground: #000000;
+  --accent: #EA580C;
+  --accent-foreground: #FFFFFF;
+  --yellow: #FFD93D;
+  --muted: #F0F9FF;
+  --muted-foreground: #3D3D3D;
+  --radius: 0px;
+  --press-duration: 100ms;
 }
 
 * {
@@ -19,14 +27,20 @@
 
 body {
   margin: 0;
-  font-family: 'Manrope', ui-sans-serif, sans-serif;
-  background:
-    radial-gradient(circle at 8% 12%, #ffe9c7 0%, transparent 35%),
-    radial-gradient(circle at 93% 80%, #d8f6ee 0%, transparent 30%),
-    var(--background);
+  font-family: 'Space Grotesk', ui-sans-serif, sans-serif;
+  background: var(--background);
   color: var(--foreground);
 }
 
 #root {
   min-height: 100vh;
+}
+
+/* Neo-brutalism utility: mechanical press effect */
+.brutal-press {
+  transition: transform var(--press-duration) linear, box-shadow var(--press-duration) linear;
+}
+.brutal-press:active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 #000;
 }
