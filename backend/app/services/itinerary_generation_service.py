@@ -149,8 +149,24 @@ class ItineraryGenerationService:
 
         # 3. Weather lookup (Open-Meteo current forecast query)
         weather_client = WeatherClient()
-        weather_data = await weather_client.get_weather(city_geo["lat"], city_geo["lng"], request_id)
-        weather_status = weather_data.get("status", "success")
+        try:
+            weather_data = await weather_client.get_weather(city_geo["lat"], city_geo["lng"], request_id)
+            weather_status = weather_data.get("status", "success")
+        except Exception as e:
+            PersistenceService.save_trace(request_id, step_number, "Weather lookup", "WEATHER_API", "error", 0.0, str(e))
+            return {
+                "status": "NO_RESULTS_FOUND",
+                "reason": f"Weather lookup failed: {str(e)}",
+                "usage_transparency": {
+                    "selected_model": "none",
+                    "routing_reason": "External weather content must be available and scanned before final planning.",
+                    "estimated_cost": route_decision.get("estimated_cost_usd", 0.0),
+                    "actual_cost": 0.0,
+                    "budget_remaining": budget.get("remaining_budget_usd", 0.0),
+                    "fallback_used": False,
+                    "tool_calls": ["GEOCODING_API", "WEATHER_API"]
+                }
+            }
         
         PersistenceService.save_trace(
             request_id, step_number, "Weather lookup", "WEATHER_API",
@@ -180,8 +196,8 @@ class ItineraryGenerationService:
         if not candidates:
             # Fail gracefully on empty candidates
             return {
-                "status": "NO_VALID_RESULTS",
-                "reason": "Unable to find places matching the constraints."
+                "status": "NO_RESULTS_FOUND",
+                "reason": "Unable to find real places matching the constraints."
             }
 
         # 5. Rank candidates (using 11 fit dimensions and config weights)
@@ -236,18 +252,77 @@ class ItineraryGenerationService:
         validation_res = {"passed": True, "checks": ["local_builder"], "warnings": []}
         
         is_critical_budget = budget.get("mode") == "critical"
-        route_is_fallback = route_decision.get("route") == "API_ONLY_FALLBACK"
+        route_is_fallback = route_decision.get("route") in ["API_ONLY_FALLBACK", "BUDGET_EXCEEDED", "FALLBACK"]
         
         if is_critical_budget or route_is_fallback:
-            # Deterministic Local Itinerary Builder
-            itinerary_result = self._build_deterministic_itinerary(city, ordered_stops, start_time_str, moods)
             fallback_used = True
-            otari_status = "skipped"
-            PersistenceService.save_trace(request_id, step_number, "Generate itinerary", "LOCAL_DETERMINISTIC_BUILDER", "ok", 0.0, "Budget critical or API fallback: skipped Otari LLM call.")
-            step_number += 1
+            itinerary_result = self._build_deterministic_itinerary(city, ordered_stops, start_time_str, moods)
+            validation_res = {
+                "passed": False,
+                "checks": ["deterministic_builder"],
+                "warnings": ["Budget or fallback route prevented Otari generation; generated deterministic itinerary instead."]
+            }
+            api_evidence = {
+                "geocoder": {
+                    "provider": city_geo["provider"],
+                    "status": geocoder_status,
+                    "latency_ms": geocode_latency
+                },
+                "places": {
+                    "provider": getattr(settings, "PLACES_PROVIDER", "overpass"),
+                    "status": places_status,
+                    "raw_candidates": candidates_res["raw_candidates_count"],
+                    "deduped_candidates": candidates_res["deduped_candidates_count"]
+                },
+                "distance": {
+                    "provider": route_ordering["provider"],
+                    "status": "ok" if route_ordering["provider"] == "google_maps" else "fallback"
+                },
+                "otari": {
+                    "status": "skipped",
+                    "model_tier": route_decision.get("model_tier", "none"),
+                    "model_id": "none",
+                    "estimated_cost_usd": 0.0,
+                    "actual_cost_usd": 0.0,
+                    "usage_source": "none"
+                }
+            }
+            cost_breakdown = self.cost_estimator.estimate_itinerary_cost(
+                itinerary_result["stops"], route_ordering, budget_val, moods, parsed["group_size"]["value"]
+            )
+            final_response = {
+                "request_id": request_id,
+                "status": "success",
+                "result_id": f"res_{uuid.uuid4().hex[:8]}",
+                "generated_at": datetime.now().isoformat(),
+                "source": {
+                    "analysis_request_id": request_id,
+                    "generation_method": "deterministic_fallback",
+                    "fallback_used": True
+                },
+                "api_evidence": api_evidence,
+                "itinerary": itinerary_result,
+                "guardian_route": guardian_res,
+                "validation": validation_res,
+                "budget_breakdown": cost_breakdown,
+                "usage_transparency": {
+                    "selected_model": "none",
+                    "routing_reason": route_decision.get("reason"),
+                    "estimated_cost": route_decision.get("estimated_cost_usd", 0.0),
+                    "actual_cost": 0.0,
+                    "latency": 0,
+                    "budget_remaining": max(0.0, budget.get("remaining_budget_usd", 0.0)),
+                    "fallback_used": True,
+                    "tool_calls": ["GEOCODING_API", "WEATHER_API", "PLACES_API", "DISTANCE_API"]
+                },
+                "routing_trace": PersistenceService.get_traces(request_id)
+            }
+            self.result_store.save_result(final_response["result_id"], request_id, final_response, validation_res, api_evidence)
+            return final_response
         else:
             # Call Otari Planner
             model_tier = route_decision.get("model_tier", "strong_planner")
+            selected_model_id = route_decision.get("model_id")
             constraints = {
                 "city": city,
                 "group_size": parsed["group_size"]["value"],
@@ -259,7 +334,16 @@ class ItineraryGenerationService:
             }
             
             try:
-                itinerary_result = await self.otari_planner.generate_itinerary(model_tier, constraints, ordered_stops, request_id, session_id)
+                itinerary_result = await self.otari_planner.generate_itinerary(
+                    model_tier,
+                    constraints,
+                    ordered_stops,
+                    budget_mode=budget.get("mode", "healthy"),
+                    weather_data=weather_data,
+                    request_id=request_id,
+                    session_id=session_id,
+                    model_id=selected_model_id,
+                )
                 otari_evidence = itinerary_result.get("_otari_evidence", {})
                 
                 validation_res = self.validator.validate_itinerary(itinerary_result, ordered_stops, budget_val)
@@ -278,22 +362,46 @@ class ItineraryGenerationService:
                         otari_evidence["input_tokens"] += repaired_itinerary.get("_otari_evidence", {}).get("input_tokens", 0)
                         otari_evidence["output_tokens"] += repaired_itinerary.get("_otari_evidence", {}).get("output_tokens", 0)
                     else:
-                        # Fall back to local builder
-                        itinerary_result = self._build_deterministic_itinerary(city, ordered_stops, start_time_str, moods)
+                        PersistenceService.save_trace(request_id, step_number, "Validate Otari repair", "LOCAL_VALIDATOR", "failed", 0.0, "Otari repair failed validation. Fallbacking to deterministic itinerary.")
                         fallback_used = True
-                        validation_res["warnings"].append("Repair failed. Deterministic fallback was used.")
-                        
-                otari_status = "ok"
-                PersistenceService.save_trace(request_id, step_number, "Generate itinerary", f"STRONG_PLANNER_MODEL ({otari_evidence.get('model_id')})", "ok", otari_evidence.get("cost_usd", 0.0), "Generated via Otari and validated.")
-                step_number += 1
+                        otari_status = "skipped"
+                        itinerary_result = self._build_deterministic_itinerary(city, ordered_stops, start_time_str, moods)
+                        validation_res = {
+                            "passed": False,
+                            "checks": ["deterministic_builder"],
+                            "warnings": ["Otari output failed validation after repair; falling back to deterministic itinerary."]
+                        }
+                        otari_evidence = {
+                            "cost_usd": 0.0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "model_id": "none",
+                            "usage_source": "none"
+                        }
+
+                if not fallback_used:
+                    otari_status = "ok"
+                    PersistenceService.save_trace(request_id, step_number, "Generate itinerary", f"STRONG_PLANNER_MODEL ({otari_evidence.get('model_id')})", "ok", otari_evidence.get("cost_usd", 0.0), "Generated via Otari and validated.")
+                    step_number += 1
             except Exception as e:
-                logger.error(f"Otari planner call failed: {e}. Falling back to deterministic itinerary.")
-                itinerary_result = self._build_deterministic_itinerary(city, ordered_stops, start_time_str, moods)
-                fallback_used = True
+                logger.error(f"Otari planner call failed: {e}.")
                 otari_status = "error"
                 validation_res = {"passed": False, "checks": [], "warnings": [f"Otari planner failed: {str(e)}"]}
-                PersistenceService.save_trace(request_id, step_number, "Generate itinerary", "LOCAL_DETERMINISTIC_BUILDER", "ok", 0.0, f"Otari failed: {str(e)}. Using fallback.")
-                step_number += 1
+                PersistenceService.save_trace(request_id, step_number, "Generate itinerary", "OTARI", "error", 0.0, f"Otari failed: {str(e)}.")
+                return {
+                    "status": "OTARI_UNAVAILABLE",
+                    "reason": f"Otari final itinerary generation failed: {str(e)}",
+                    "validation": validation_res,
+                    "usage_transparency": {
+                        "selected_model": route_decision.get("model_id", "otari"),
+                        "routing_reason": route_decision.get("reason"),
+                        "estimated_cost": route_decision.get("estimated_cost_usd", 0.0),
+                        "actual_cost": 0.0,
+                        "budget_remaining": budget.get("remaining_budget_usd", 0.0),
+                        "fallback_used": False,
+                        "tool_calls": ["GEOCODING_API", "WEATHER_API", "PLACES_API", "DISTANCE_API", "OTARI"]
+                    }
+                }
 
         # 10. Compute Final cost breakdown passing group_size
         cost_breakdown = self.cost_estimator.estimate_itinerary_cost(
@@ -359,6 +467,16 @@ class ItineraryGenerationService:
             "guardian_route": guardian_res,
             "validation": validation_report,
             "budget_breakdown": cost_breakdown,
+            "usage_transparency": {
+                "selected_model": otari_evidence.get("model_id", route_decision.get("model_id", "otari")),
+                "routing_reason": route_decision.get("reason"),
+                "estimated_cost": route_decision.get("estimated_cost_usd", 0.0),
+                "actual_cost": otari_evidence.get("cost_usd", 0.0),
+                "latency": otari_evidence.get("latency_ms", 0),
+                "budget_remaining": max(0.0, budget.get("remaining_budget_usd", 0.0) - otari_evidence.get("cost_usd", 0.0)),
+                "fallback_used": False,
+                "tool_calls": ["GEOCODING_API", "WEATHER_API", "PLACES_API", "DISTANCE_API", "OTARI"]
+            },
             "routing_trace": PersistenceService.get_traces(request_id)
         }
         

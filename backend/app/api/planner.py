@@ -3,15 +3,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from app.core import demo_state
-from app.services.injection_service import InjectionService
+from app.services.local_security_service import LocalSecurityService
 from app.services.intent_classifier_service import IntentClassifierService
 from app.services.parser_service import ParserService
 from app.services.otari_extractor_service import OtariExtractorService
 from app.services.complexity_service import ComplexityService
 from app.services.budget_service import BudgetService
 from app.services.context_service import ContextService
-from app.services.router_engine import RouterEngine
-from app.services.trace_service import TraceService
+from app.services.local_router_service import LocalRouterService
 from app.services.persistence_service import PersistenceService
 from app.services.itinerary_generation_service import ItineraryGenerationService
 from app.services.geocoding_service import GeocodingService
@@ -45,9 +44,9 @@ async def analyze_request(request: AnalyzeRequest):
     # Save the initial request log
     PersistenceService.save_request(request_id, session_id, prompt, budget_mode)
     
-    # 1. Security Scan
-    sec_service = InjectionService()
-    security = sec_service.scan(prompt)
+    # 1. Security Scan via local Mozilla stack
+    sec_service = LocalSecurityService()
+    security = await sec_service.scan(prompt)
     
     PersistenceService.save_trace(
         request_id, 1, "Prompt injection scan", "LOCAL_LOGIC",
@@ -85,76 +84,61 @@ async def analyze_request(request: AnalyzeRequest):
     if not parsed["moods"]["value"]:
         missing_fields.append("moods")
         
-    # 4. Optional Cheap Otari Extractor
+    # 4. Optional extraction is local-only. Otari is reserved for final itinerary generation.
     used_otari_extractor = False
     otari_success = True
-    if security["safe"] and budget_mode != "critical" and missing_fields:
-        extractor = OtariExtractorService()
-        extract_result = await extractor.extract(prompt)
-        if extract_result["success"]:
-            used_otari_extractor = True
-            ext_data = extract_result["extracted"]
-            for key, field_name in [
-                ("city", "city"),
-                ("current_location", "current_location"),
-                ("group_size", "group_size"),
-                ("budget_per_person_inr", "budget_per_person_inr"),
-                ("start_time", "start_time"),
-                ("end_time", "end_time"),
-                ("moods", "moods"),
-                ("energy", "energy"),
-                ("transport", "transport"),
-                ("dietary_restrictions", "dietary_restrictions"),
-                ("weather_conditions", "weather_conditions"),
-                ("accessibility_requirements", "accessibility_requirements"),
-                ("safety_preferences", "safety_preferences"),
-                ("crowd_tolerance", "crowd_tolerance")
-            ]:
-                val = ext_data.get(key)
-                if val is not None and (field_name not in parsed or not parsed[field_name]["value"] or parsed[field_name]["confidence"] < 0.8):
-                    parsed[field_name] = {
-                        "value": val,
-                        "confidence": 0.90,
-                        "source": "otari_cheap_extractor"
-                    }
-                    
-            # Reevaluate missing fields after Otari extractor run
-            missing_fields = []
-            if not parsed.get("city", {}).get("value"):
-                missing_fields.append("city")
-            if not parsed.get("group_size", {}).get("value"):
-                missing_fields.append("group_size")
-            if not parsed.get("budget_per_person_inr", {}).get("value"):
-                missing_fields.append("budget_per_person")
-            if not parsed.get("start_time", {}).get("value") or not parsed.get("end_time", {}).get("value"):
-                missing_fields.append("time_window")
-            if not parsed.get("moods", {}).get("value"):
-                missing_fields.append("moods")
-        else:
-            if extract_result.get("used_otari"):
-                used_otari_extractor = True
-                otari_success = False
-    # 4.5 Default fallbacks if city is present to prevent blocking
-    if parsed.get("city", {}).get("value"):
-        if not parsed.get("group_size", {}).get("value"):
-            parsed["group_size"] = {"value": 1, "confidence": 0.80, "source": "default_fallback"}
-        if not parsed.get("budget_per_person_inr", {}).get("value"):
-            parsed["budget_per_person_inr"] = {"value": 1000, "confidence": 0.80, "source": "default_fallback"}
-        if not parsed.get("start_time", {}).get("value") or not parsed.get("end_time", {}).get("value"):
-            parsed["start_time"] = {"value": "10 AM", "confidence": 0.80, "source": "default_fallback"}
-            parsed["end_time"] = {"value": "6 PM", "confidence": 0.80, "source": "default_fallback"}
-        if not parsed.get("moods", {}).get("value"):
-            parsed["moods"] = {"value": ["sightseeing", "food"], "confidence": 0.80, "source": "default_fallback"}
-        missing_fields = []
 
     # 5. Overall confidence calculation
     total_conf = sum(parsed[k]["confidence"] for k in parsed)
     overall_confidence = round(total_conf / len(parsed), 2)
+
+    # 6. Conditional Otari extractor for low-confidence or missing constraints.
+    # Do not call Otari extractor for blocked or out-of-scope requests.
+    should_use_otari_extractor = (
+        security["safe"]
+        and intent["type"] == "travel_planning"
+        and budget_mode != "critical"
+        and (missing_fields or overall_confidence < 0.8)
+    )
+    if should_use_otari_extractor:
+        extractor_service = OtariExtractorService()
+        extraction_result = await extractor_service.extract(prompt)
+        used_otari_extractor = True
+        if not isinstance(extraction_result, dict):
+            extraction_result = {}
+
+        otari_success = bool(extraction_result.get("success", False)) and isinstance(extraction_result.get("extracted", {}), dict)
+
+        if otari_success:
+            extracted = extraction_result.get("extracted", {})
+            if not isinstance(extracted, dict):
+                extracted = {}
+            for field in [
+                "city", "group_size", "budget_per_person_inr",
+                "start_time", "end_time", "moods", "energy",
+                "transport", "dietary_restrictions", "crowd_tolerance"
+            ]:
+                if field in extracted and extracted[field] is not None:
+                    parsed[field]["value"] = extracted[field]
+                    parsed[field]["confidence"] = max(parsed[field].get("confidence", 0.0), 0.8)
+                    parsed[field]["source"] = "otari_extractor"
+
+            missing_fields = []
+            if not parsed["city"]["value"]:
+                missing_fields.append("city")
+            if not parsed["group_size"]["value"]:
+                missing_fields.append("group_size")
+            if not parsed["budget_per_person_inr"]["value"]:
+                missing_fields.append("budget_per_person")
+            if not parsed["start_time"]["value"] or not parsed["end_time"]["value"]:
+                missing_fields.append("time_window")
+            if not parsed["moods"]["value"]:
+                missing_fields.append("moods")
     
     PersistenceService.save_trace(
         request_id, 3, "Constraint parsing", "LOCAL_PARSER" if not used_otari_extractor else "OTARI_CHEAP_EXTRACTOR",
         "high_confidence" if overall_confidence >= 0.8 else "low_confidence", 0.0,
-        "Required fields extracted locally." if overall_confidence >= 0.8 else "Vague or missing planning constraints."
+        "Required fields extracted locally." if overall_confidence >= 0.8 else ("Otari extractor succeeded." if otari_success else "Otari extractor failed or was unreachable.")
     )
     
     # 6. Complexity scoring
@@ -175,19 +159,31 @@ async def analyze_request(request: AnalyzeRequest):
         0.0, f"Budget mode is {budget_mode}."
     )
     
-    # 9. Route decision
-    router_engine = RouterEngine()
-    route_decision = router_engine.decide_route(
+    # 9. Route decision using local AI routing model
+    local_router = LocalRouterService()
+    features = local_router.estimate_features(
+        prompt=prompt,
         security=security,
         intent=intent,
         parsed=parsed,
         complexity=complexity,
         budget=budget_ledger,
-        missing_fields=missing_fields
+        missing_fields=missing_fields,
+        estimated_cost_usd=0.0,
     )
-    
-    # Update budget ledger estimated cost
-    budget_ledger["estimated_request_cost_usd"] = route_decision["estimated_cost_usd"]
+    route_decision = await local_router.decide(features)
+    route_decision["local_router_features"] = {k: v for k, v in features.items() if k != "prompt"}
+    route_decision["local_route"] = {
+        "route": route_decision.get("route"),
+        "model_tier": route_decision.get("model_tier"),
+        "model_id": route_decision.get("model_id"),
+        "model_configured": route_decision.get("model_configured"),
+        "estimated_cost_usd": route_decision.get("estimated_cost_usd", 0.0),
+        "reason": route_decision.get("reason"),
+        "confidence": route_decision.get("confidence", 0.0),
+        "decision_source": route_decision.get("decision_source"),
+    }
+    budget_ledger["estimated_request_cost_usd"] = route_decision.get("estimated_cost_usd", 0.0)
     
     # Determine next action
     next_action = "generate"
@@ -197,9 +193,11 @@ async def analyze_request(request: AnalyzeRequest):
         next_action = "out_of_scope"
     elif intent["type"] == "unsupported_live_data":
         next_action = "fallback"
-    elif missing_fields:
+    elif intent["type"] == "budget_math":
+        next_action = "generate"
+    elif route_decision["route"] == "CLARIFY_REQUIRED":
         next_action = "clarify"
-    elif budget_mode == "critical":
+    elif route_decision["route"] in ["BUDGET_EXCEEDED", "API_ONLY_FALLBACK", "FALLBACK", "API_ONLY"]:
         next_action = "fallback"
         
     PersistenceService.save_trace(

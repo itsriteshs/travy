@@ -34,11 +34,4 @@ class WeatherClient(BaseClient):
             }
         except Exception as e:
             logger.warning(f"Failed to fetch weather from Open-Meteo: {e}")
-            return {
-                "temperature": 25.0,
-                "weather_code": 0,
-                "humidity": 50.0,
-                "provider": "open_meteo",
-                "status": "error",
-                "error": str(e)
-            }
+            raise RuntimeError(f"Weather lookup failed: {e}")

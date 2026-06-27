@@ -1,8 +1,18 @@
 from app.core.config import settings
+from app.integrations.otari_client import OtariClient
+
 
 class RouterEngine:
+    def _estimate_cost(self, model_id: str, complexity: dict, parsed: dict) -> float:
+        token_count = 900 + int(complexity.get("score", 0) * 10)
+        output_tokens = 900
+        if parsed.get("moods", {}).get("value"):
+            output_tokens += 200
+        client = OtariClient()
+        pricing_key = client.get_pricing_key(model_id)
+        return round(client.calculate_cost(pricing_key, token_count, output_tokens), 6)
+
     def decide_route(self, security: dict, intent: dict, parsed: dict, complexity: dict, budget: dict, missing_fields: list) -> dict:
-        # Check security block
         if not security["safe"]:
             return {
                 "route": "BLOCKED",
@@ -10,10 +20,9 @@ class RouterEngine:
                 "model_id": "none",
                 "model_configured": False,
                 "estimated_cost_usd": 0.0,
-                "reason": "Security scanner blocked prompt before model execution."
+                "reason": "Security scanner blocked prompt before model execution.",
             }
-            
-        # Check intent types
+
         intent_type = intent["type"]
         if intent_type == "booking_request":
             return {
@@ -22,9 +31,9 @@ class RouterEngine:
                 "model_id": "none",
                 "model_configured": False,
                 "estimated_cost_usd": 0.0,
-                "reason": "Booking/payment requests are out of scope for the Travy MVP."
+                "reason": "Booking/payment requests are outside Travy planning scope.",
             }
-            
+
         if intent_type == "unsupported_live_data":
             return {
                 "route": "FALLBACK",
@@ -32,21 +41,19 @@ class RouterEngine:
                 "model_id": "none",
                 "model_configured": False,
                 "estimated_cost_usd": 0.0,
-                "reason": "Guardian Route uses static proxy signals, not unsupported real-time live data."
+                "reason": "Requested live data source is not supported by the planner's factual toolchain.",
             }
-            
-        # Check deterministic math before missing fields check
+
         if intent_type == "budget_math":
             return {
                 "route": "LOCAL_LOGIC",
-                "model_tier": "none",
-                "model_id": "none",
-                "model_configured": False,
+                "model_tier": "local",
+                "model_id": settings.LLAMAFILE_MODEL,
+                "model_configured": bool(settings.LLAMAFILE_BASE_URL),
                 "estimated_cost_usd": 0.0,
-                "reason": "Simple budget calculation performed via deterministic local logic."
+                "reason": "Budget calculation is handled by the local control plane.",
             }
-            
-        # Check missing required fields
+
         if missing_fields:
             return {
                 "route": "CLARIFY_REQUIRED",
@@ -54,13 +61,11 @@ class RouterEngine:
                 "model_id": "none",
                 "model_configured": False,
                 "estimated_cost_usd": 0.0,
-                "reason": f"Required planning fields are missing: {missing_fields}"
+                "reason": f"Required planning fields are missing: {missing_fields}",
             }
-            
-        # Check budget mode
+
         budget_mode = budget["mode"]
         comp_score = complexity["score"]
-        
         if budget_mode == "critical":
             return {
                 "route": "API_ONLY_FALLBACK",
@@ -68,54 +73,46 @@ class RouterEngine:
                 "model_id": "none",
                 "model_configured": False,
                 "estimated_cost_usd": 0.0,
-                "reason": "Budget critical — deterministic builder active, no LLM cost"
+                "reason": "Budget critical: use API-only fallback and avoid Otari planning.",
             }
-            
-        # Select model based on complexity and budget mode
+
         if budget_mode == "low":
             model_id = settings.OTARI_CHEAP_MODEL
-            route = "COMPRESSED_CHEAP_MODEL"
             tier = "cheap"
-            cost = 0.008 # low budget compressed context estimate
-            reason = f"High complexity ({comp_score}) but low budget: compressed context and cheap model."
-        elif budget_mode == "cautious":
-            if comp_score >= 50:
-                model_id = settings.OTARI_BALANCED_MODEL
-                route = "BALANCED_PLANNER_MODEL"
-                tier = "balanced_planner"
-                cost = 0.015
-                reason = f"Moderate complexity (complexity={comp_score}) in cautious mode — balanced model"
-            else:
-                model_id = settings.OTARI_CHEAP_MODEL
-                route = "LOCAL_LLM"
-                tier = "cheap"
-                cost = 0.005
-                reason = f"Simple request (complexity={comp_score}) in cautious mode — cheap model"
-        else: # healthy/auto
-            if comp_score >= 60: # 60 instead of 70 to support standard test prompt complexity
-                model_id = settings.OTARI_STRONG_MODEL
-                route = "STRONG_PLANNER_MODEL"
-                tier = "strong_planner"
-                cost = 0.041
-                reason = f"High complexity (complexity={comp_score}) — strong model for multi-constraint planning"
-            elif comp_score >= 35:
-                model_id = settings.OTARI_BALANCED_MODEL
-                route = "BALANCED_PLANNER_MODEL"
-                tier = "balanced_planner"
-                cost = 0.015
-                reason = f"Moderate complexity (complexity={comp_score}) in healthy mode — balanced model"
-            else:
-                model_id = settings.OTARI_CHEAP_MODEL
-                route = "LOCAL_LLM"
-                tier = "cheap"
-                cost = 0.003
-                reason = f"Simple request (complexity={comp_score}) in healthy mode — cheap model"
-                
+            route = "COMPRESSED_CHEAP_MODEL"
+            reason = f"Low budget: compressed context with Otari cheap model for final itinerary generation."
+        elif comp_score >= 60:
+            model_id = settings.OTARI_STRONG_MODEL
+            tier = "strong_planner"
+            route = "STRONG_PLANNER_MODEL"
+            reason = f"High complexity ({comp_score}): Otari strong model for multi-constraint itinerary generation."
+        elif comp_score >= 35:
+            model_id = settings.OTARI_BALANCED_MODEL
+            tier = "balanced_planner"
+            route = "BALANCED_PLANNER_MODEL"
+            reason = f"Moderate complexity ({comp_score}): Otari balanced model for final itinerary generation."
+        else:
+            model_id = settings.OTARI_CHEAP_MODEL
+            tier = "cheap"
+            route = "COMPRESSED_CHEAP_MODEL"
+            reason = f"Simple travel request ({comp_score}): use compressed Otari cheap model."
+
+        cost = self._estimate_cost(model_id, complexity, parsed)
+        if cost > budget.get("remaining_budget_usd", 0.0):
+            return {
+                "route": "BUDGET_EXCEEDED",
+                "model_tier": "none",
+                "model_id": "none",
+                "model_configured": False,
+                "estimated_cost_usd": cost,
+                "reason": "Estimated Otari request cost exceeds remaining live budget.",
+            }
+
         return {
             "route": route,
             "model_tier": tier,
             "model_id": model_id,
             "model_configured": bool(model_id),
             "estimated_cost_usd": cost,
-            "reason": reason
+            "reason": reason,
         }

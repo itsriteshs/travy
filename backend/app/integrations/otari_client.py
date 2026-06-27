@@ -77,13 +77,13 @@ class OtariClient(BaseClient):
         
         # We handle guardrail block status_code 400 at this client layer
         start_time = time.perf_counter()
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=settings.OTARI_TIMEOUT_SECONDS) as client:
             try:
                 response = await client.post(
                     f"{settings.OTARI_BASE_URL}/chat/completions",
                     headers=headers,
                     json=payload,
-                    timeout=30.0
+                    timeout=settings.OTARI_TIMEOUT_SECONDS
                 )
                 latency_ms = int((time.perf_counter() - start_time) * 1000)
                 

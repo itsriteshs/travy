@@ -1,30 +1,31 @@
 from typing import Dict, Any, Optional
 from app.services.persistence_service import PersistenceService
-from app.core import demo_state
+from app.core.config import settings
 
 class BudgetLedgerService:
     @staticmethod
     def get_ledger_summary(session_id: str = "demo", mode: Optional[str] = None) -> Dict[str, Any]:
-        # Fetch DB metrics
         summary = PersistenceService.get_budget_ledger_summary(session_id)
-        
-        # Use passed mode, or fallback to demo state
-        active_mode = mode or demo_state.current_demo_mode
-        if active_mode == "low":
-            summary["remaining_usd"] = 0.12
-            summary["actual_used_usd"] = 1.88
-            summary["total_budget_usd"] = 2.0
-        elif active_mode == "critical":
-            summary["remaining_usd"] = 0.02
-            summary["actual_used_usd"] = 1.98
-            summary["total_budget_usd"] = 2.0
+        total_budget = float(summary.get("total_budget_usd") or settings.DAILY_BUDGET_USD)
+        used_budget = float(summary.get("actual_used_usd") or 0.0)
+        remaining = max(0.0, total_budget - used_budget)
+
+        active_mode = mode or "auto"
+        if active_mode == "auto":
+            ratio = remaining / total_budget if total_budget else 0.0
+            if ratio <= 0.05:
+                active_mode = "critical"
+            elif ratio <= 0.25:
+                active_mode = "low"
+            else:
+                active_mode = "healthy"
             
         return {
             "mode": active_mode,
-            "total_budget_usd": summary["total_budget_usd"],
-            "used_budget_usd": summary["actual_used_usd"],
-            "remaining_budget_usd": summary["remaining_usd"],
-            "estimated_request_cost_usd": 0.0, # Filled in router later
+            "total_budget_usd": total_budget,
+            "used_budget_usd": used_budget,
+            "remaining_budget_usd": remaining,
+            "estimated_request_cost_usd": 0.0,
             "last_call": summary.get("last_call")
         }
 

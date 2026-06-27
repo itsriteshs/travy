@@ -38,9 +38,6 @@ class CandidateBuilderService:
             mapped = MOOD_CATEGORY_MAP.get(mood_lower, [mood_lower])
             for cat in mapped:
                 categories.add(cat)
-        # Default fallback
-        if not categories:
-            categories.update(["monument", "restaurant", "market"])
         return list(categories)
 
     async def get_candidates(self, city_geo: dict, moods: List[str], request_id: Optional[str] = None) -> Dict[str, Any]:

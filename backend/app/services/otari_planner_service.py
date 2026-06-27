@@ -19,18 +19,21 @@ class OtariPlannerService:
         budget_mode: str = "healthy",
         weather_data: Dict[str, Any] = None,
         request_id: Optional[str] = None,
-        session_id: str = "demo"
+        session_id: str = "demo",
+        model_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         
-        # Map model tier to configured model key
-        if model_tier == "strong_planner":
-            model_id = settings.OTARI_STRONG_MODEL
-        elif model_tier == "balanced_planner":
-            model_id = settings.OTARI_BALANCED_MODEL
-        elif model_tier == "cheap" or model_tier == "local":
-            model_id = settings.OTARI_CHEAP_MODEL
-        else:
-            model_id = settings.OTARI_STRONG_MODEL
+        # Model chosen by local routing AI should take precedence.
+        resolved_model_id = model_id
+        if not resolved_model_id:
+            if model_tier == "strong_planner":
+                resolved_model_id = settings.OTARI_STRONG_MODEL
+            elif model_tier == "balanced_planner":
+                resolved_model_id = settings.OTARI_BALANCED_MODEL
+            elif model_tier == "cheap" or model_tier == "local":
+                resolved_model_id = settings.OTARI_CHEAP_MODEL
+            else:
+                resolved_model_id = settings.OTARI_STRONG_MODEL
             
         # Get budget remaining from DB or usage service
         # For simplicity, we can fetch from persistence or calculate from settings limit (2.0)
@@ -189,7 +192,7 @@ class OtariPlannerService:
 
         client = OtariClient()
         res = await client.generate_completion(
-            model=model_id,
+            model=resolved_model_id,
             prompt=f"{system_prompt}\n\n{user_prompt}",
             max_tokens=1200,
             request_id=request_id,
@@ -249,7 +252,7 @@ class OtariPlannerService:
             "blend_summary": itinerary_data.get("blend_summary"),
             "guardian_note": itinerary_data.get("guardian_note"),
             "_otari_evidence": {
-                "model_id": model_id,
+                "model_id": resolved_model_id,
                 "latency_ms": res.get("latency_ms", 0),
                 "cost_usd": res.get("cost_usd", 0.0),
                 "input_tokens": res.get("input_tokens", 0),
