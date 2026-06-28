@@ -7,9 +7,6 @@ const NAV_LINKS = [
   { path: '/travison', label: 'Travison' },
   { path: '/planner', label: 'Planner' },
   { path: '/results', label: 'Results' },
-  { path: '/router', label: 'AI Router' },
-  { path: '/security', label: 'Security' },
-  { path: '/demo', label: 'Demo' },
 ]
 
 export function Nav() {

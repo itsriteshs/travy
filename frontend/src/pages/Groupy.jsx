@@ -11,7 +11,6 @@ const MAX_PEOPLE = 5
 function createPerson(id) {
   return {
     id,
-    label: `Person ${id}`,
     notes: '',
   }
 }
@@ -88,12 +87,12 @@ export function Groupy() {
           </div>
 
           <div className="space-y-3">
-            {people.map((person) => (
+            {people.map((person, index) => (
               <article key={person.id} className="border-[3px] border-black bg-white p-4 shadow-[5px_5px_0_#000]">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="text-[10px] font-black uppercase tracking-widest text-[var(--muted-foreground)]">
-                      {person.label}
+                      Person {index + 1}
                     </div>
                     <div className="text-lg font-black">Mood + wish</div>
                   </div>

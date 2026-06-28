@@ -61,7 +61,7 @@ export function buildGroupyPrompt(people) {
     'INFO: <short detail>',
     '',
     ...slots.map((person, index) => {
-      const name = person?.label || `Person ${index + 1}`
+      const name = `Person ${index + 1}`
       const notes = String(person?.notes || '').trim() || 'No notes provided.'
       return `${name}: ${notes}`
     }),
