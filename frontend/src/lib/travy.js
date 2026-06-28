@@ -46,6 +46,32 @@ export async function submitTravelPrompt(prompt) {
   })
 }
 
+export function buildGroupyPrompt(people) {
+  const slots = Array.isArray(people) ? people : []
+  return [
+    'Create a travel plan for this group based on each person\'s mood and wish to visit.',
+    'Return a practical plan that balances the different preferences.',
+    'Use a structured itinerary format with:',
+    'TITLE: <short title>',
+    'DESC: <one sentence description>',
+    'STOP 1',
+    'NAME: <place>',
+    'TIME: <time range>',
+    'COST: <cost per person>',
+    'INFO: <short detail>',
+    '',
+    ...slots.map((person, index) => {
+      const name = person?.label || `Person ${index + 1}`
+      const notes = String(person?.notes || '').trim() || 'No notes provided.'
+      return `${name}: ${notes}`
+    }),
+  ].join('\n')
+}
+
+export async function submitGroupyPrompt(people) {
+  return submitTravelPrompt(buildGroupyPrompt(people))
+}
+
 function isSectionHeading(line) {
   return /^(#{1,3}\s*)?(timeline|travel order|route|spend(?:ing)?|estimated spending|summary|places)\b/i.test(line)
 }

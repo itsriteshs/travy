@@ -1,0 +1,182 @@
+TRAVY — REVISION NOTES
+======================
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TECH STACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FRONTEND
+  React 19              UI framework
+  React Router v6       Client-side routing (/planner, /results, /router…)
+  Tailwind CSS v4       Utility-first styling (via @tailwindcss/vite plugin)
+  Vite v8               Dev server + bundler
+  Lucide React          Icon library (SVG-based)
+  Radix UI (Progress)   Accessible headless progress bar primitive
+  class-variance-authority  Variant-based class composition for Button
+  clsx + tailwind-merge Conditional className merging
+
+BACKEND
+  Python 3.11+
+  FastAPI               REST API framework (async-first)
+  Uvicorn               ASGI server
+  Pydantic v2           Request/response validation and settings management
+  pydantic-settings     .env loading via Settings class
+  httpx                 Async HTTP client used to call the Otari (Mozilla AI) API
+
+AI / MODEL LAYER
+  Otari (Mozilla AI Inference)   Hosted LLM gateway (OpenAI-compatible)
+    otari-small   → Qwen/Qwen3-32B
+    otari-medium  → Qwen/Qwen3-30B-A3B-Instruct-2507
+    otari-large   → Qwen/Qwen3-Next-80B-A3B-Thinking
+    otari-vision  → Qwen/Qwen2.5-VL-72B-Instruct
+
+LOCAL ENGINES (no external calls, run in-process)
+  EncoderfileEngine     Semantic analysis / intent + category classification
+  LlamafileEngine       Security screening + complexity scoring + cost estimation
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THE 4 CORE CONDITIONS (pipeline order)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Every POST /chat request runs through all four in sequence before any LLM
+is called. If any condition blocks, the chain stops and returns early.
+
+CONDITION 1 — SEMANTIC ANALYSIS (EncoderfileEngine)
+  File: backend/encoderfile_engine.py
+  What it does:
+    - Tokenises the prompt with regex (\w+)
+    - Assigns a CATEGORY based on token count and keyword presence:
+        VISION   → prompt contains "image", "photo", or "vision"
+        COMPLEX  → 80+ tokens OR keywords: optimize / constraints /
+                   multi-city / group
+        MEDIUM   → 35–79 tokens
+        SIMPLE   → everything else
+    - Assigns INTENT (travel_planning vs general_query) by checking for
+      travel-related keywords (trip, itinerary, visit, tour, hangout…)
+    - Generates a SHA-256 embedding_id (first 12 hex chars of prompt hash)
+    - Sets cache_hit deterministically: last hex digit of embedding_id % 4 == 0
+
+CONDITION 2 — SECURITY SCREENING (LlamafileEngine + SecurityAgent)
+  Files: backend/security/llamafile_engine.py
+         backend/agents/security_agent.py
+  What it does:
+    LlamafileEngine scans the lowercased prompt with two regex pattern groups:
+
+    BLOCKED patterns (risk_score → 95, status → "BLOCKED"):
+      - "ignore previous instructions"
+      - "reveal system prompt"
+      - "developer mode"
+      - "jailbreak"
+      - "api key"
+      - "role hijack"
+
+    SUSPICIOUS patterns (risk_score → 55, status → "SUSPICIOUS"):
+      - "bypass" / "override"
+      - "do anything now"
+      - "hidden instructions"
+
+    SecurityAgent then evaluates:
+      - If status == "BLOCKED" → returns False, request is rejected immediately.
+        Response: "Request blocked due to prompt injection/jailbreak risk."
+      - SUSPICIOUS prompts are allowed through but flagged in the transparency panel.
+      - SAFE prompts continue normally.
+
+CONDITION 3 — COMPLEXITY SCORING + MODEL SELECTION (LlamafileEngine → RouterAgent)
+  Files: backend/security/llamafile_engine.py
+         backend/router/routing_engine.py
+         backend/agents/router_agent.py
+  (see "HOW COMPLEXITY IS CALCULATED" section below)
+
+CONDITION 4 — BUDGET ENFORCEMENT (BudgetAgent → BudgetManager)
+  Files: backend/budget/budget_manager.py
+         backend/agents/budget_agent.py
+  What it does:
+    BudgetManager holds a thread-safe (Lock) running total of money spent.
+    Initial budget = $2.00 USD (configurable via INITIAL_BUDGET_USD env var).
+
+    enforce(estimated_cost, selected_model) logic:
+      1. If remaining_budget <= 0:
+           → return otari-small, cost=0, downgraded=True, exhausted=True
+           → Response text: "AI budget exhausted. Switching to lightweight mode."
+      2. If estimated_cost > remaining_budget:
+           → downgrade to otari-small
+           → cap cost to min(remaining, estimated * 0.35)
+           → downgraded=True
+      3. Otherwise run as selected.
+      4. Deduct final_cost from running total.
+      5. exhausted=True if total spend >= initial budget after deduction.
+
+    The frontend Planner page reads GET /budget live and shows
+    BUDGET HEALTHY / LOW / CRITICAL based on % remaining.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW COMPLEXITY IS CALCULATED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  File: backend/security/llamafile_engine.py → LlamafileEngine.analyze()
+
+  Formula:
+    complexity_score = clamp( len(words) + bonus, min=5, max=100 )
+
+    where:
+      len(words)  = number of regex tokens (\w+) in the prompt
+      bonus       = +15 if category == "COMPLEX", else 0
+                    forced to >= 70 if category == "VISION"
+
+  Examples:
+    "Plan something in Delhi."
+      → ~5 tokens → complexity ≈ 5  (SIMPLE)
+
+    "Plan Delhi for 4 friends from 2 PM to 8 PM. Budget ₹800 each…"
+      → ~25 tokens + 0 bonus → complexity ≈ 25  (MEDIUM)
+
+    "Plan a multi-city trip across Rajasthan optimizing for budget…"
+      → 15 tokens + 15 (COMPLEX bonus) → complexity ≈ 30+
+
+  Complexity also feeds the cost estimate:
+    estimated_tokens = int(len(prompt_chars) * 0.45) + 120
+
+    complexity < 25  → otari-small,  rate $0.0000018/token
+    25 ≤ complexity ≤ 60 → otari-medium, rate $0.0000032/token
+    complexity > 60  → otari-large,  rate $0.0000052/token
+    VISION category  → otari-vision, rate $0.000006/token
+
+    estimated_cost = estimated_tokens × multiplier
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW ROUTING WORKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Files: backend/router/routing_engine.py
+         backend/agents/router_agent.py
+
+  RouterAgent.finalize() calls RoutingEngine.select_model() after the
+  security check passes.
+
+  Decision tree:
+    1. If category == "VISION"  → otari-vision (forced, skips score check)
+    2. complexity_score < 25    → otari-small
+    3. complexity_score 25–60   → otari-medium
+    4. complexity_score > 60    → otari-large
+
+  After routing, BudgetAgent may override (downgrade) the selection:
+    - If the estimated cost for the chosen model exceeds the remaining budget
+      → forced down to otari-small at 35% of original estimated cost.
+
+  The final selected_model and routing_reason are returned to the frontend
+  in the transparency panel on the Results page.
+
+  Full pipeline summary:
+    POST /chat
+      → EncoderfileEngine (category + intent + cache_hit)
+      → LlamafileEngine (security + complexity + cost estimate)
+      → SecurityAgent (block if BLOCKED)
+      → RouterAgent → RoutingEngine (model selection by complexity)
+      → BudgetAgent → BudgetManager (cost enforcement + downgrade)
+      → MCP tool context fetch (weather, places, map, budget)
+      → Otari API call (structured STOP-format itinerary)
+      → ChatResponse returned (response + transparency + budget)

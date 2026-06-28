@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     otari_base_url: str = "https://api.inference.mozilla.ai"
     otari_api_key: str = ""
     otari_timeout_seconds: float = 45.0
+    smallest_ai_api_key: str = ""
     otari_small_model: str = "Qwen/Qwen3-32B"
     otari_medium_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     otari_large_model: str = "Qwen/Qwen3-Next-80B-A3B-Thinking"

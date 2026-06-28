@@ -1,4 +1,11 @@
 from fastapi import APIRouter
+import httpx
+import base64
+import json
+import asyncio
+import websockets
+from urllib.parse import urlencode
+from pydantic import BaseModel
 
 from agents.budget_agent import BudgetAgent
 from agents.router_agent import RouterAgent
@@ -10,6 +17,10 @@ from otari.client import generate_itinerary
 from schemas import BudgetStatus, ChatRequest, ChatResponse, TransparencyPanel
 from security.llamafile_engine import LlamafileEngine
 from tools.mcpd_tools import budget_tool, maps_tool, places_tool, weather_tool
+
+
+class TranscribeRequest(BaseModel):
+    audio_base64: str
 
 
 router = APIRouter()
@@ -49,6 +60,84 @@ async def provider_check() -> dict:
             "otari-vision": settings.otari_vision_model,
         },
     }
+
+
+@router.post("/transcribe")
+async def transcribe(payload: TranscribeRequest) -> dict:
+    """Transcribe audio using Smallest.ai Pulse speech-to-text API via WebSocket."""
+    if not settings.smallest_ai_api_key:
+        return {"error": "Smallest.ai API key not configured", "text": "", "status": "error"}
+
+    try:
+        # Decode base64 audio to binary PCM data
+        # Frontend now sends raw PCM16 at 16000 Hz (already resampled and encoded)
+        audio_data = base64.b64decode(payload.audio_base64)
+        print(f"[TRANSCRIBE] Received PCM data: {len(audio_data)} bytes")
+        
+        if len(audio_data) == 0:
+            return {"error": "Audio data is empty", "text": "", "status": "error"}
+        
+        # WebSocket URL with audio configuration parameters
+        params = {
+            "language": "en",
+            "encoding": "linear16",
+            "sample_rate": "16000",
+            "word_timestamps": "false"
+        }
+        ws_url = f"wss://api.smallest.ai/waves/v1/pulse/get_text?{urlencode(params)}"
+        print(f"[TRANSCRIBE] Connecting to: {ws_url}")
+        
+        headers = {"Authorization": f"Bearer {settings.smallest_ai_api_key}"}
+        
+        transcript = ""
+        
+        async with websockets.connect(ws_url, additional_headers=headers) as ws:
+            print("[TRANSCRIBE] WebSocket connected, sending audio...")
+            
+            # Send audio in chunks
+            chunk_size = 4096
+            chunks_sent = 0
+            for i in range(0, len(audio_data), chunk_size):
+                chunk = audio_data[i:i + chunk_size]
+                await ws.send(chunk)
+                chunks_sent += 1
+            print(f"[TRANSCRIBE] Sent {chunks_sent} chunks ({len(audio_data)} bytes total)")
+            
+            # Signal end of audio
+            finalize_msg = json.dumps({"type": "finalize"})
+            await ws.send(finalize_msg)
+            print(f"[TRANSCRIBE] Sent finalize signal")
+            
+            # Collect responses
+            print("[TRANSCRIBE] Waiting for transcription...")
+            async for message in ws:
+                try:
+                    data = json.loads(message)
+                    print(f"[TRANSCRIBE] Received: {data}")
+                    
+                    if data.get("is_final"):
+                        transcript = data.get("transcript", "")
+                        print(f"[TRANSCRIBE] ✓ Final transcript: '{transcript}'")
+                        break
+                    else:
+                        # Use partial result
+                        partial = data.get("transcript", "")
+                        if partial:
+                            transcript = partial
+                            print(f"[TRANSCRIBE] Partial: '{partial}'")
+                except json.JSONDecodeError:
+                    print(f"[TRANSCRIBE] Non-JSON message received")
+        
+        print(f"[TRANSCRIBE] Final result: '{transcript}'")
+        return {
+            "text": transcript,
+            "status": "success",
+        }
+    except Exception as e:
+        print(f"[TRANSCRIBE] ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e), "text": "", "status": "error"}
 
 
 @router.post("/chat", response_model=ChatResponse)

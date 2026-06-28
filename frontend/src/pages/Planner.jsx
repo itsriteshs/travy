@@ -5,6 +5,7 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Progress } from '../components/ui/progress'
 import { Textarea } from '../components/ui/textarea'
+import { AudioRecorder } from '../components/AudioRecorder'
 import { fetchBudgetSnapshot, formatCurrency, submitTravelPrompt } from '../lib/travy'
 
 const QUICK_PROMPTS = [
@@ -122,6 +123,9 @@ export function Planner() {
                   Calls the FastAPI backend. If the backend is offline, the error is shown instead
                   of pretending.
                 </p>
+
+                {/* Audio recorder */}
+                <AudioRecorder onTranscribed={(text) => setPrompt((prev) => prev + ' ' + text)} />
 
                 {/* Quick prompts */}
                 <div className="flex flex-wrap gap-2">

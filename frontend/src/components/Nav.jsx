@@ -3,6 +3,7 @@ import { User } from 'lucide-react'
 
 const NAV_LINKS = [
   { path: '/', label: 'Home' },
+  { path: '/groupy', label: 'Groupy' },
   { path: '/planner', label: 'Planner' },
   { path: '/results', label: 'Results' },
   { path: '/router', label: 'AI Router' },

@@ -29,6 +29,11 @@ export function Home() {
                 START PLANNING <ArrowRight size={15} className="ml-2" />
               </Button>
             </Link>
+            <Link to="/groupy">
+              <Button variant="secondary" className="brutal-press bg-[var(--yellow)] text-black">
+                GROUPY
+              </Button>
+            </Link>
             <Link to="/demo">
               <Button variant="secondary" className="brutal-press bg-[var(--primary)] text-black">
                 VIEW ROUTING DEMO
