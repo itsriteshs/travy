@@ -8,14 +8,16 @@ import { formatCurrency, computeStructuredResult } from '../lib/travy'
 
 export function Results() {
   const [data, setData] = useState(null)
+  const [travisonMeta, setTravisonMeta] = useState(null)
   const navigate = useNavigate()
 
   useEffect(() => {
     const stored = sessionStorage.getItem('travy_result')
     if (!stored) return
     try {
-      const { result, prompt } = JSON.parse(stored)
+      const { result, prompt, travison } = JSON.parse(stored)
       setData(computeStructuredResult(result, prompt))
+      setTravisonMeta(travison || null)
     } catch {
       navigate('/planner')
     }
@@ -206,6 +208,27 @@ export function Results() {
               </div>
             </CardContent>
           </Card>
+
+          {travisonMeta && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Gemini Vision Output</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="mb-2 flex flex-wrap gap-2">
+                  <span className="border-[2px] border-black bg-[var(--yellow)] px-2 py-0.5 text-[10px] font-black uppercase tracking-widest">
+                    MODE: {travisonMeta.vision_mode || 'unknown'}
+                  </span>
+                  <span className="border-[2px] border-black bg-[var(--muted)] px-2 py-0.5 text-[10px] font-black uppercase tracking-widest">
+                    SUBJECT: {travisonMeta.vision?.primary_subject || 'n/a'}
+                  </span>
+                </div>
+                <pre className="overflow-x-auto whitespace-pre-wrap border-[2px] border-black bg-white p-3 text-xs leading-5">
+                  {travisonMeta.gemini_raw_output || 'No raw vision text returned.'}
+                </pre>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </main>

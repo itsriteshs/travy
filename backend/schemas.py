@@ -58,5 +58,7 @@ class TravisonVisionSummary(BaseModel):
 
 class TravisonResponse(BaseModel):
     vision: TravisonVisionSummary
+    vision_mode: str
+    gemini_raw_output: str
     prompt_used: str
     result: ChatResponse

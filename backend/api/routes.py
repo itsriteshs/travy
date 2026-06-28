@@ -100,6 +100,8 @@ async def transcribe(payload: TranscribeRequest) -> dict:
         headers = {"Authorization": f"Bearer {settings.smallest_ai_api_key}"}
         
         transcript = ""
+        transcript_chunks: list[str] = []
+        saw_final = False
         
         async with websockets.connect(ws_url, additional_headers=headers) as ws:
             print("[TRANSCRIBE] WebSocket connected, sending audio...")
@@ -118,25 +120,41 @@ async def transcribe(payload: TranscribeRequest) -> dict:
             await ws.send(finalize_msg)
             print(f"[TRANSCRIBE] Sent finalize signal")
             
-            # Collect responses
+            # Collect responses. Some providers can emit multiple final chunks,
+            # so we keep listening briefly after the first final signal.
             print("[TRANSCRIBE] Waiting for transcription...")
-            async for message in ws:
+            while True:
+                timeout_seconds = 1.8 if saw_final else 6.0
+                try:
+                    message = await asyncio.wait_for(ws.recv(), timeout=timeout_seconds)
+                except asyncio.TimeoutError:
+                    break
+
                 try:
                     data = json.loads(message)
                     print(f"[TRANSCRIBE] Received: {data}")
-                    
+
+                    text = str(data.get("transcript", "")).strip()
+                    if text:
+                        # Keep longest single hypothesis and unique chunks.
+                        if len(text) > len(transcript):
+                            transcript = text
+                        if text not in transcript_chunks:
+                            transcript_chunks.append(text)
+
                     if data.get("is_final"):
-                        transcript = data.get("transcript", "")
-                        print(f"[TRANSCRIBE] ✓ Final transcript: '{transcript}'")
+                        saw_final = True
+
+                    message_type = str(data.get("type", "")).lower()
+                    if message_type in {"done", "completed", "final_response"}:
                         break
-                    else:
-                        # Use partial result
-                        partial = data.get("transcript", "")
-                        if partial:
-                            transcript = partial
-                            print(f"[TRANSCRIBE] Partial: '{partial}'")
                 except json.JSONDecodeError:
-                    print(f"[TRANSCRIBE] Non-JSON message received")
+                    print("[TRANSCRIBE] Non-JSON message received")
+
+            if transcript_chunks:
+                combined = " ".join(transcript_chunks).strip()
+                if len(combined) > len(transcript):
+                    transcript = combined
         
         print(f"[TRANSCRIBE] Final result: '{transcript}'")
         return {
@@ -393,21 +411,25 @@ async def travison(
     encoded_image = base64.b64encode(image_bytes).decode("utf-8")
     content_type = image.content_type or "image/jpeg"
     quota_fallback = False
+    gemini_raw_output = ""
 
     try:
         completion = await _call_gemini_vision_with_fallback(encoded_image, content_type)
         candidates = completion.get("candidates") or []
         parts = (((candidates[0] if candidates else {}).get("content") or {}).get("parts") or [])
         content = "\n".join(str(part.get("text") or "") for part in parts).strip()
+        gemini_raw_output = content
         parsed = _extract_json_object(content)
     except HTTPException as exc:
         if exc.status_code == 429:
             parsed = _fallback_vision_summary(image.filename, additional_context)
+            gemini_raw_output = f"Gemini quota fallback: {exc.detail}"
             quota_fallback = True
         else:
             raise
-    except Exception:
+    except Exception as exc:
         parsed = _fallback_vision_summary(image.filename, additional_context)
+        gemini_raw_output = f"Gemini parse fallback: {exc}"
         quota_fallback = True
 
     landmarks = [str(item).strip() for item in (parsed.get("landmarks") or []) if str(item).strip()]
@@ -446,6 +468,8 @@ async def travison(
             landmarks=landmarks,
             labels=labels,
         ),
+        vision_mode="fallback-context" if quota_fallback else "direct-vision",
+        gemini_raw_output=gemini_raw_output,
         prompt_used=planning_prompt,
         result=chat_result,
     )

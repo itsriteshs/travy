@@ -93,7 +93,16 @@ export function Travison() {
       const structured = computeStructuredResult(response.result, response.prompt_used)
       sessionStorage.setItem(
         'travy_result',
-        JSON.stringify({ result: response.result, prompt: response.prompt_used, structured }),
+        JSON.stringify({
+          result: response.result,
+          prompt: response.prompt_used,
+          structured,
+          travison: {
+            vision: response.vision,
+            vision_mode: response.vision_mode,
+            gemini_raw_output: response.gemini_raw_output,
+          },
+        }),
       )
       navigate('/results')
     } catch (err) {
