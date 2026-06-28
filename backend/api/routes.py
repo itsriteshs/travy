@@ -31,6 +31,38 @@ class TranscribeRequest(BaseModel):
     audio_base64: str
 
 
+def _merge_transcript_chunks(current: str, incoming: str) -> str:
+    current = (current or "").strip()
+    incoming = (incoming or "").strip()
+
+    if not incoming:
+        return current
+    if not current:
+        return incoming
+
+    # If one chunk fully contains the other, keep the longer hypothesis.
+    if incoming in current:
+        return current
+    if current in incoming:
+        return incoming
+
+    # If the new chunk starts with current text, it is likely an extended hypothesis.
+    if incoming.startswith(current):
+        return incoming
+
+    # If current already starts with incoming, keep current.
+    if current.startswith(incoming):
+        return current
+
+    # Stitch chunks using maximal suffix/prefix overlap.
+    max_overlap = min(len(current), len(incoming), 240)
+    for overlap in range(max_overlap, 0, -1):
+        if current.endswith(incoming[:overlap]):
+            return f"{current}{incoming[overlap:]}".strip()
+
+    return f"{current} {incoming}".strip()
+
+
 router = APIRouter()
 
 encoder = EncoderfileEngine()
@@ -100,7 +132,6 @@ async def transcribe(payload: TranscribeRequest) -> dict:
         headers = {"Authorization": f"Bearer {settings.smallest_ai_api_key}"}
         
         transcript = ""
-        transcript_chunks: list[str] = []
         saw_final = False
         
         async with websockets.connect(ws_url, additional_headers=headers) as ws:
@@ -136,11 +167,7 @@ async def transcribe(payload: TranscribeRequest) -> dict:
 
                     text = str(data.get("transcript", "")).strip()
                     if text:
-                        # Keep longest single hypothesis and unique chunks.
-                        if len(text) > len(transcript):
-                            transcript = text
-                        if text not in transcript_chunks:
-                            transcript_chunks.append(text)
+                        transcript = _merge_transcript_chunks(transcript, text)
 
                     if data.get("is_final"):
                         saw_final = True
@@ -151,11 +178,6 @@ async def transcribe(payload: TranscribeRequest) -> dict:
                 except json.JSONDecodeError:
                     print("[TRANSCRIBE] Non-JSON message received")
 
-            if transcript_chunks:
-                combined = " ".join(transcript_chunks).strip()
-                if len(combined) > len(transcript):
-                    transcript = combined
-        
         print(f"[TRANSCRIBE] Final result: '{transcript}'")
         return {
             "text": transcript,
@@ -271,6 +293,30 @@ def _extract_json_object(raw_text: str) -> dict:
     return json.loads(text)
 
 
+def _summarize_gemini_error(detail: str) -> str:
+    text = str(detail or "")
+    try:
+        payload = json.loads(text)
+        err = payload.get("error") or {}
+        code = err.get("code")
+        status = err.get("status")
+        message = str(err.get("message") or "").strip().replace("\n", " ")
+        message = re.sub(r"\s+", " ", message)
+        message = message[:220] + "..." if len(message) > 220 else message
+        parts = ["Gemini fallback active"]
+        if code:
+            parts.append(f"code {code}")
+        if status:
+            parts.append(status)
+        if message:
+            parts.append(message)
+        return " | ".join(parts)
+    except Exception:
+        clean = re.sub(r"\s+", " ", text).strip()
+        clean = clean[:220] + "..." if len(clean) > 220 else clean
+        return f"Gemini fallback active | {clean or 'Unknown error'}"
+
+
 def _fallback_vision_summary(filename: str | None, additional_context: str) -> dict:
     source = " ".join(
         part for part in [filename or "", additional_context or ""] if part
@@ -361,7 +407,8 @@ async def _call_gemini_vision_with_fallback(encoded_image: str, content_type: st
                 return response.json()
 
             last_error_text = response.text
-            if response.status_code != 404:
+            # Keep trying other models on 404 and 429 (free-tier/model quota issues).
+            if response.status_code not in {404, 429}:
                 raise HTTPException(status_code=response.status_code, detail=f"Gemini vision error: {response.text}")
 
         # If all direct attempts returned 404, ask ModelService for supported models.
@@ -390,7 +437,7 @@ async def _call_gemini_vision_with_fallback(encoded_image: str, content_type: st
             if response.status_code < 400:
                 return response.json()
 
-            if response.status_code != 404:
+            if response.status_code not in {404, 429}:
                 raise HTTPException(status_code=response.status_code, detail=f"Gemini vision error: {response.text}")
 
     raise HTTPException(status_code=502, detail="Gemini vision error: no supported generateContent model was found")
@@ -423,7 +470,7 @@ async def travison(
     except HTTPException as exc:
         if exc.status_code == 429:
             parsed = _fallback_vision_summary(image.filename, additional_context)
-            gemini_raw_output = f"Gemini quota fallback: {exc.detail}"
+            gemini_raw_output = _summarize_gemini_error(exc.detail)
             quota_fallback = True
         else:
             raise

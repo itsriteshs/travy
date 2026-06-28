@@ -180,3 +180,88 @@ HOW ROUTING WORKS
       → MCP tool context fetch (weather, places, map, budget)
       → Otari API call (structured STOP-format itinerary)
       → ChatResponse returned (response + transparency + budget)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LATEST REVISION UPDATE (2026-06-28)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1) GROUPY — MULTI-PERSON INPUT STABILIZED
+  Files: frontend/src/pages/Groupy.jsx
+         frontend/src/lib/travy.js
+
+  Changes:
+    - Added dedicated Groupy flow for multiple people (up to 5 slots).
+    - Added "Add person" and per-slot "Remove" actions.
+    - Fixed visible person numbering bug after add/remove cycles.
+      UI labels are now derived by slot index, so users always see:
+      Person 1, Person 2, Person 3 ... (no random skips like 1/3/5).
+    - Groupy prompt generation now uses sequential person labels by order.
+
+
+2) TRAVISON — IMAGE-TO-TRIP FLOW ADDED
+  Files: frontend/src/pages/Travison.jsx
+         frontend/src/App.jsx
+         frontend/src/components/Nav.jsx
+         frontend/src/pages/Home.jsx
+         frontend/src/lib/travy.js
+         backend/api/routes.py
+         backend/schemas.py
+         backend/config.py
+
+  Changes:
+    - Added Travison page with image upload/capture + optional trip context.
+    - Added /travison backend endpoint:
+      image input → vision extraction → Otari itinerary generation.
+    - Added auto image compression in frontend before upload to reduce
+      payload size and avoid large request failures.
+    - Added result handoff to Results page using existing structured parser.
+
+
+3) TRAVISON VISION PROVIDER MIGRATION + RESILIENCE
+  Files: backend/api/routes.py
+         backend/config.py
+         backend/.env.example
+         README.md
+
+  Changes:
+    - Migrated Travison vision analysis from Groq path to Gemini API path.
+    - Added model fallback strategy for Gemini model-id mismatches:
+      tries configured model, common aliases, then list-model discovery.
+    - Added quota-safe fallback mode:
+      if Gemini returns 429/quota exhausted, Travison derives coarse labels
+      from filename/context and still produces an itinerary (no hard failure).
+
+
+4) TRAVISON TRANSPARENCY — RAW GEMINI OUTPUT DISPLAY
+  Files: backend/schemas.py
+         backend/api/routes.py
+         frontend/src/pages/Travison.jsx
+         frontend/src/pages/Results.jsx
+
+  Changes:
+    - Backend now returns:
+      - vision_mode (direct-vision vs fallback-context)
+      - gemini_raw_output (raw text returned by Gemini or fallback reason)
+    - Results page now renders a "Gemini Vision Output" panel so users can
+      inspect what the vision model actually produced.
+
+
+5) SPEECH-TO-TEXT CUT-OFF FIX
+  File: backend/api/routes.py
+
+  Issue:
+    - Transcription could stop at first "final" chunk and return partial text.
+
+  Fix:
+    - Updated websocket receive loop to aggregate multiple transcript chunks,
+      continue listening briefly after final markers, then combine output.
+    - Prevents common mid-sentence truncation in longer voice inputs.
+
+
+6) TOP NAV CLEANUP
+  File: frontend/src/components/Nav.jsx
+
+  Changes:
+    - Removed top nav buttons:
+      AI Router, Security, Demo
