@@ -84,6 +84,8 @@ From the project root:
 - Global budget starts at $2 and is enforced before generation.
 - BLOCKED security requests never reach Otari.
 - Transparency fields are returned for every request.
+- Travison image-to-trip flow requires GEMINI_API_KEY in backend/.env.
+- Travison endpoint: POST /travison (image upload -> Gemini vision analysis -> Otari similar-place itinerary).
 - Local routing aliases map to provider models via environment variables:
 	- otari-small -> OTARI_SMALL_MODEL
 	- otari-medium -> OTARI_MEDIUM_MODEL

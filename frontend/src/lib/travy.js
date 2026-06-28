@@ -72,6 +72,17 @@ export async function submitGroupyPrompt(people) {
   return submitTravelPrompt(buildGroupyPrompt(people))
 }
 
+export async function submitTravisonImage(file, additionalContext = '') {
+  const formData = new FormData()
+  formData.append('image', file)
+  formData.append('additional_context', additionalContext)
+
+  return readJson('/travison', {
+    method: 'POST',
+    body: formData,
+  })
+}
+
 function isSectionHeading(line) {
   return /^(#{1,3}\s*)?(timeline|travel order|route|spend(?:ing)?|estimated spending|summary|places)\b/i.test(line)
 }

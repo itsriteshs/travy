@@ -1,8 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 import httpx
 import base64
 import json
 import asyncio
+import re
 import websockets
 from urllib.parse import urlencode
 from pydantic import BaseModel
@@ -14,7 +15,14 @@ from budget.budget_manager import BudgetManager
 from config import settings
 from encoderfile_engine import EncoderfileEngine
 from otari.client import generate_itinerary
-from schemas import BudgetStatus, ChatRequest, ChatResponse, TransparencyPanel
+from schemas import (
+    BudgetStatus,
+    ChatRequest,
+    ChatResponse,
+    TransparencyPanel,
+    TravisonResponse,
+    TravisonVisionSummary,
+)
 from security.llamafile_engine import LlamafileEngine
 from tools.mcpd_tools import budget_tool, maps_tool, places_tool, weather_tool
 
@@ -53,11 +61,13 @@ async def provider_check() -> dict:
     return {
         "otari_base_url": settings.otari_base_url,
         "has_api_key": bool(settings.otari_api_key),
+        "has_gemini_key": bool(settings.gemini_api_key),
         "models": {
             "otari-small": settings.otari_small_model,
             "otari-medium": settings.otari_medium_model,
             "otari-large": settings.otari_large_model,
             "otari-vision": settings.otari_vision_model,
+            "gemini-vision": settings.gemini_vision_model,
         },
     }
 
@@ -140,9 +150,8 @@ async def transcribe(payload: TranscribeRequest) -> dict:
         return {"error": str(e), "text": "", "status": "error"}
 
 
-@router.post("/chat", response_model=ChatResponse)
-async def chat(payload: ChatRequest) -> ChatResponse:
-    prompt = payload.prompt.strip()
+async def _run_chat_pipeline(prompt: str) -> ChatResponse:
+    prompt = prompt.strip()
 
     # Required flow: encoder embeddings + intent/category.
     encoder_out = encoder.analyze(prompt)
@@ -223,3 +232,220 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     )
 
     return ChatResponse(response=response_text, transparency=transparency, budget=budget_status)
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat(payload: ChatRequest) -> ChatResponse:
+    return await _run_chat_pipeline(payload.prompt)
+
+
+def _extract_json_object(raw_text: str) -> dict:
+    text = (raw_text or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        text = text[start : end + 1]
+    return json.loads(text)
+
+
+def _fallback_vision_summary(filename: str | None, additional_context: str) -> dict:
+    source = " ".join(
+        part for part in [filename or "", additional_context or ""] if part
+    ).lower()
+
+    # Build coarse labels from filename/context so we can still route a useful similarity plan.
+    tokens = re.findall(r"[a-z]{3,}", source)
+    stopwords = {
+        "image",
+        "photo",
+        "jpeg",
+        "jpg",
+        "png",
+        "trip",
+        "plan",
+        "travel",
+    }
+    labels = []
+    for token in tokens:
+        if token in stopwords:
+            continue
+        if token not in labels:
+            labels.append(token)
+        if len(labels) >= 5:
+            break
+
+    if not labels:
+        labels = ["landmark", "architecture", "cultural site"]
+
+    primary_subject = labels[0].replace("_", " ").title()
+    return {
+        "primary_subject": primary_subject,
+        "landmarks": [],
+        "labels": labels,
+    }
+
+
+async def _call_gemini_vision_with_fallback(encoded_image: str, content_type: str) -> dict:
+    base_url = "https://generativelanguage.googleapis.com/v1beta"
+    key = settings.gemini_api_key
+
+    prompt_text = (
+        "Analyze this image and return ONLY valid JSON in the format: "
+        '{"primary_subject":"...","landmarks":["..."],"labels":["..."]}. '
+        "Use concise strings. If no landmark is clear, keep landmarks empty and infer labels."
+    )
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt_text},
+                    {
+                        "inline_data": {
+                            "mime_type": content_type,
+                            "data": encoded_image,
+                        }
+                    },
+                ]
+            }
+        ],
+        "generationConfig": {"temperature": 0},
+    }
+
+    async def try_model(client: httpx.AsyncClient, model_name: str) -> httpx.Response:
+        url = f"{base_url}/models/{model_name}:generateContent?key={key}"
+        return await client.post(url, json=payload, headers={"Content-Type": "application/json"})
+
+    candidates: list[str] = []
+    if settings.gemini_vision_model:
+        candidates.append(settings.gemini_vision_model)
+    candidates.extend([
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro-latest",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+    ])
+
+    # Deduplicate while preserving order.
+    deduped_candidates = list(dict.fromkeys([m.strip() for m in candidates if m.strip()]))
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        last_error_text = ""
+        for model_name in deduped_candidates:
+            response = await try_model(client, model_name)
+            if response.status_code < 400:
+                return response.json()
+
+            last_error_text = response.text
+            if response.status_code != 404:
+                raise HTTPException(status_code=response.status_code, detail=f"Gemini vision error: {response.text}")
+
+        # If all direct attempts returned 404, ask ModelService for supported models.
+        list_url = f"{base_url}/models?key={key}"
+        list_response = await client.get(list_url)
+        if list_response.status_code >= 400:
+            raise HTTPException(
+                status_code=list_response.status_code,
+                detail=f"Gemini vision error: {last_error_text or list_response.text}",
+            )
+
+        model_items = list_response.json().get("models") or []
+        discovered = []
+        for item in model_items:
+            name = str(item.get("name") or "")
+            methods = item.get("supportedGenerationMethods") or []
+            if "generateContent" in methods and name.startswith("models/"):
+                short_name = name.split("/", 1)[1]
+                discovered.append(short_name)
+
+        # Prefer flash-style models for speed and free-tier friendliness.
+        discovered.sort(key=lambda n: ("flash" not in n.lower(), n))
+
+        for model_name in discovered:
+            response = await try_model(client, model_name)
+            if response.status_code < 400:
+                return response.json()
+
+            if response.status_code != 404:
+                raise HTTPException(status_code=response.status_code, detail=f"Gemini vision error: {response.text}")
+
+    raise HTTPException(status_code=502, detail="Gemini vision error: no supported generateContent model was found")
+
+
+@router.post("/travison", response_model=TravisonResponse)
+async def travison(
+    image: UploadFile = File(...),
+    additional_context: str = Form(default=""),
+) -> TravisonResponse:
+    if not settings.gemini_api_key:
+        raise HTTPException(status_code=500, detail="Gemini API key is not configured")
+
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Image upload is empty")
+
+    encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+    content_type = image.content_type or "image/jpeg"
+    quota_fallback = False
+
+    try:
+        completion = await _call_gemini_vision_with_fallback(encoded_image, content_type)
+        candidates = completion.get("candidates") or []
+        parts = (((candidates[0] if candidates else {}).get("content") or {}).get("parts") or [])
+        content = "\n".join(str(part.get("text") or "") for part in parts).strip()
+        parsed = _extract_json_object(content)
+    except HTTPException as exc:
+        if exc.status_code == 429:
+            parsed = _fallback_vision_summary(image.filename, additional_context)
+            quota_fallback = True
+        else:
+            raise
+    except Exception:
+        parsed = _fallback_vision_summary(image.filename, additional_context)
+        quota_fallback = True
+
+    landmarks = [str(item).strip() for item in (parsed.get("landmarks") or []) if str(item).strip()]
+    labels = [str(item).strip() for item in (parsed.get("labels") or []) if str(item).strip()]
+
+    primary_subject = str(parsed.get("primary_subject") or "").strip()
+    if not primary_subject:
+        primary_subject = landmarks[0] if landmarks else (labels[0] if labels else "landmark")
+    hints = landmarks[:3] if landmarks else labels[:5]
+    hint_text = ", ".join(hints) if hints else primary_subject
+
+    planning_prompt = (
+        "You are Travison, a vision-guided trip assistant.\n"
+        f"Photo analysis detected: {hint_text}.\n"
+        f"Primary subject: {primary_subject}.\n"
+        f"Vision confidence mode: {'fallback-context' if quota_fallback else 'direct-vision'}.\n"
+        "Suggest a trip plan with places similar in style, culture, architecture, or vibe to the detected subject.\n"
+        "Keep the itinerary practical with time ranges and costs per person.\n"
+        "Use this exact structure:\n"
+        "TITLE: <short title>\n"
+        "DESC: <one sentence description>\n"
+        "STOP 1\n"
+        "NAME: <place>\n"
+        "TIME: <time range>\n"
+        "COST: <cost per person>\n"
+        "INFO: <short detail>\n"
+        "STOP 2...\n"
+        f"Additional user context: {additional_context.strip() or 'None provided.'}"
+    )
+
+    chat_result = await _run_chat_pipeline(planning_prompt)
+
+    return TravisonResponse(
+        vision=TravisonVisionSummary(
+            primary_subject=primary_subject,
+            landmarks=landmarks,
+            labels=labels,
+        ),
+        prompt_used=planning_prompt,
+        result=chat_result,
+    )

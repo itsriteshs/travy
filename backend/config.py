@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     otari_api_key: str = ""
     otari_timeout_seconds: float = 45.0
     smallest_ai_api_key: str = ""
+    gemini_api_key: str = ""
+    gemini_vision_model: str = "gemini-1.5-flash-latest"
     otari_small_model: str = "Qwen/Qwen3-32B"
     otari_medium_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     otari_large_model: str = "Qwen/Qwen3-Next-80B-A3B-Thinking"

@@ -48,3 +48,15 @@ class ChatResponse(BaseModel):
     response: str
     transparency: TransparencyPanel
     budget: BudgetStatus
+
+
+class TravisonVisionSummary(BaseModel):
+    primary_subject: str
+    landmarks: list[str]
+    labels: list[str]
+
+
+class TravisonResponse(BaseModel):
+    vision: TravisonVisionSummary
+    prompt_used: str
+    result: ChatResponse
