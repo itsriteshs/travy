@@ -5,6 +5,19 @@ import httpx
 
 from config import settings
 
+# Persistent HTTP client – avoids per-request TCP/TLS handshake overhead.
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=settings.otari_timeout_seconds,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+    return _http_client
+
 
 def _extract_city(prompt: str) -> str:
     m = re.search(r"in\s+([A-Za-z\s]+)", prompt)
@@ -132,10 +145,10 @@ async def generate_itinerary(prompt: str, model: str, mcpd_context: dict[str, An
     }
 
     try:
-        async with httpx.AsyncClient(timeout=settings.otari_timeout_seconds) as client:
-            response = await client.post(_chat_completions_url(), headers=headers, json=body)
-            response.raise_for_status()
-            data = response.json()
+        client = _get_client()
+        response = await client.post(_chat_completions_url(), headers=headers, json=body)
+        response.raise_for_status()
+        data = response.json()
 
         text = _extract_text(data)
         if text:

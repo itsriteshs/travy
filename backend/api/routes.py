@@ -26,6 +26,19 @@ from schemas import (
 from security.llamafile_engine import LlamafileEngine
 from tools.mcpd_tools import budget_tool, maps_tool, places_tool, weather_tool
 
+# Persistent HTTP client for Gemini vision calls – avoids per-request TCP/TLS overhead.
+_gemini_client: httpx.AsyncClient | None = None
+
+
+def _get_gemini_client() -> httpx.AsyncClient:
+    global _gemini_client
+    if _gemini_client is None or _gemini_client.is_closed:
+        _gemini_client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+    return _gemini_client
+
 
 class TranscribeRequest(BaseModel):
     audio_base64: str
@@ -138,7 +151,7 @@ async def transcribe(payload: TranscribeRequest) -> dict:
             print("[TRANSCRIBE] WebSocket connected, sending audio...")
             
             # Send audio in chunks
-            chunk_size = 4096
+            chunk_size = 16384
             chunks_sent = 0
             for i in range(0, len(audio_data), chunk_size):
                 chunk = audio_data[i:i + chunk_size]
@@ -155,7 +168,7 @@ async def transcribe(payload: TranscribeRequest) -> dict:
             # so we keep listening briefly after the first final signal.
             print("[TRANSCRIBE] Waiting for transcription...")
             while True:
-                timeout_seconds = 1.8 if saw_final else 6.0
+                timeout_seconds = 0.8 if saw_final else 3.0
                 try:
                     message = await asyncio.wait_for(ws.recv(), timeout=timeout_seconds)
                 except asyncio.TimeoutError:
@@ -399,46 +412,46 @@ async def _call_gemini_vision_with_fallback(encoded_image: str, content_type: st
     # Deduplicate while preserving order.
     deduped_candidates = list(dict.fromkeys([m.strip() for m in candidates if m.strip()]))
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        last_error_text = ""
-        for model_name in deduped_candidates:
-            response = await try_model(client, model_name)
-            if response.status_code < 400:
-                return response.json()
+    client = _get_gemini_client()
+    last_error_text = ""
+    for model_name in deduped_candidates:
+        response = await try_model(client, model_name)
+        if response.status_code < 400:
+            return response.json()
 
-            last_error_text = response.text
-            # Keep trying other models on 404 and 429 (free-tier/model quota issues).
-            if response.status_code not in {404, 429}:
-                raise HTTPException(status_code=response.status_code, detail=f"Gemini vision error: {response.text}")
+        last_error_text = response.text
+        # Keep trying other models on 404 and 429 (free-tier/model quota issues).
+        if response.status_code not in {404, 429}:
+            raise HTTPException(status_code=response.status_code, detail=f"Gemini vision error: {response.text}")
 
-        # If all direct attempts returned 404, ask ModelService for supported models.
-        list_url = f"{base_url}/models?key={key}"
-        list_response = await client.get(list_url)
-        if list_response.status_code >= 400:
-            raise HTTPException(
-                status_code=list_response.status_code,
-                detail=f"Gemini vision error: {last_error_text or list_response.text}",
-            )
+    # If all direct attempts returned 404, ask ModelService for supported models.
+    list_url = f"{base_url}/models?key={key}"
+    list_response = await client.get(list_url)
+    if list_response.status_code >= 400:
+        raise HTTPException(
+            status_code=list_response.status_code,
+            detail=f"Gemini vision error: {last_error_text or list_response.text}",
+        )
 
-        model_items = list_response.json().get("models") or []
-        discovered = []
-        for item in model_items:
-            name = str(item.get("name") or "")
-            methods = item.get("supportedGenerationMethods") or []
-            if "generateContent" in methods and name.startswith("models/"):
-                short_name = name.split("/", 1)[1]
-                discovered.append(short_name)
+    model_items = list_response.json().get("models") or []
+    discovered = []
+    for item in model_items:
+        name = str(item.get("name") or "")
+        methods = item.get("supportedGenerationMethods") or []
+        if "generateContent" in methods and name.startswith("models/"):
+            short_name = name.split("/", 1)[1]
+            discovered.append(short_name)
 
-        # Prefer flash-style models for speed and free-tier friendliness.
-        discovered.sort(key=lambda n: ("flash" not in n.lower(), n))
+    # Prefer flash-style models for speed and free-tier friendliness.
+    discovered.sort(key=lambda n: ("flash" not in n.lower(), n))
 
-        for model_name in discovered:
-            response = await try_model(client, model_name)
-            if response.status_code < 400:
-                return response.json()
+    for model_name in discovered:
+        response = await try_model(client, model_name)
+        if response.status_code < 400:
+            return response.json()
 
-            if response.status_code not in {404, 429}:
-                raise HTTPException(status_code=response.status_code, detail=f"Gemini vision error: {response.text}")
+        if response.status_code not in {404, 429}:
+            raise HTTPException(status_code=response.status_code, detail=f"Gemini vision error: {response.text}")
 
     raise HTTPException(status_code=502, detail="Gemini vision error: no supported generateContent model was found")
 
